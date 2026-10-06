@@ -1,0 +1,1 @@
+export const RELEASE_PUBLIC_KEY = "r0QMGedfn12PCAQFtc5Em02EyOBsQfTJdZBxwZjECW8=";

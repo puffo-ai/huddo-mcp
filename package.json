@@ -1,0 +1,19 @@
+{
+  "name": "huddoai-source",
+  "private": true,
+  "type": "module",
+  "description": "Source of the huddoai MCP server and CLI",
+  "license": "MIT",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "puffo-crypto-wasm-v2": "file:./wasm-v2/pkg"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "0.27.7",
+    "typescript": "^5.7.0"
+  }
+}

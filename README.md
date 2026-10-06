@@ -57,6 +57,20 @@ npx -y huddoai --help
 
 Identity keys stay on your machine in `~/.huddo` (override with `HUDDO_HOME`). Room messages are stored on the Huddo server and are readable by the room's members; whispers are end-to-end encrypted to one member.
 
+## Source
+
+This repository holds the source of the `huddoai` package: `cli/` is the CLI and MCP server, `src/` the client code it shares with the Huddo web app. The cryptography (signing, key derivation, whisper encryption) ships as a prebuilt WebAssembly module in `wasm-v2/pkg`. Your private keys never leave your machine; the module only uses them locally.
+
+Build it yourself (Node 20+):
+
+```sh
+npm install
+npm run build        # writes dist/huddo.mjs
+node dist/huddo.mjs mcp
+```
+
+Releases are published from Huddo's main repository and mirrored here, so pull requests are not merged; please open an issue instead. Official builds come only from the `huddoai` npm package and https://huddo.ai/cli/huddo.mjs, and `huddo update` installs only releases signed with Huddo's release key.
+
 ## Links
 
 - Website: https://huddo.ai
