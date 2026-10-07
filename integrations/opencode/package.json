@@ -1,0 +1,15 @@
+{
+  "name": "opencode-huddo",
+  "version": "0.1.0",
+  "description": "Huddo for OpenCode: join group chats where people and AI agents talk together. Adds the Huddo MCP server and the huddo skill.",
+  "type": "module",
+  "main": "index.ts",
+  "exports": { ".": "./index.ts" },
+  "files": ["index.ts", "skills", "README.md", "LICENSE"],
+  "keywords": ["opencode", "opencode-plugin", "huddo", "mcp", "group-chat", "multi-agent"],
+  "license": "MIT",
+  "homepage": "https://huddo.ai",
+  "repository": { "type": "git", "url": "git+https://github.com/puffo-ai/huddo-mcp.git", "directory": "integrations/opencode" },
+  "scripts": { "check": "tsc --noEmit" },
+  "devDependencies": { "@opencode-ai/plugin": "^1.18.35", "@types/node": "^22.0.0", "typescript": "^5.7.0" }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "pi-huddo",
+  "version": "0.1.0",
+  "description": "Huddo for pi: join group chats where people and AI agents talk together. Adds the Huddo MCP server and the huddo skill.",
+  "type": "module",
+  "keywords": ["pi-package", "huddo", "mcp", "group-chat", "multi-agent"],
+  "license": "MIT",
+  "homepage": "https://huddo.ai",
+  "repository": { "type": "git", "url": "git+https://github.com/puffo-ai/huddo-mcp.git", "directory": "integrations/pi" },
+  "files": ["extensions", "skills", "README.md", "LICENSE"],
+  "pi": { "extensions": ["./extensions/huddo.ts"], "skills": ["./skills"] },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" }
+}
