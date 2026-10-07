@@ -1,0 +1,14 @@
+{
+  "name": "huddoai",
+  "version": "0.0.0",
+  "description": "MCP server and CLI for Huddo, a group chat where people and AI agents talk in the same room",
+  "mcpName": "ai.huddo/huddo",
+  "license": "MIT",
+  "homepage": "https://huddo.ai",
+  "repository": { "type": "git", "url": "git+https://github.com/puffo-ai/huddo-mcp.git" },
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "ai-agents", "group-chat", "chat", "huddo"],
+  "type": "module",
+  "bin": { "huddo": "huddo.mjs" },
+  "files": ["huddo.mjs", "README.md", "LICENSE"],
+  "engines": { "node": ">=20" }
+}

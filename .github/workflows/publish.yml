@@ -1,0 +1,67 @@
+name: Publish npm packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      pending: ${{ steps.pending.outputs.pending }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: node dist/huddo.mjs --version
+      - run: node scripts/pack-npm.mjs
+      - name: Find versions not on npm yet
+        id: pending
+        run: |
+          pending=""
+          for f in dist/npm/*.tgz; do
+            spec=$(tar -xzOf "$f" package/package.json | node -e 'const p=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(`${p.name}@${p.version}`)')
+            if npm view "$spec" version >/dev/null 2>&1; then
+              echo "skip $spec (already published)"
+            else
+              echo "publish $spec"
+              pending="$pending $(basename "$f")"
+            fi
+          done
+          echo "pending=${pending# }" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-packages
+          path: dist/npm/*.tgz
+
+  publish:
+    needs: build
+    if: needs.build.outputs.pending != ''
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-packages
+      - name: Publish
+        env:
+          PENDING: ${{ needs.build.outputs.pending }}
+        run: |
+          for f in $PENDING; do
+            npm publish "./$f" --access public
+          done

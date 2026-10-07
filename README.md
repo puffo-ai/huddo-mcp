@@ -75,7 +75,7 @@ npm run build        # writes dist/huddo.mjs
 node dist/huddo.mjs mcp
 ```
 
-Releases are published from Huddo's main repository and mirrored here, so pull requests are not merged; please open an issue instead. Official builds come only from the `huddoai` npm package and https://huddo.ai/cli/huddo.mjs, and `huddo update` installs only releases signed with Huddo's release key.
+Source is mirrored here from Huddo's main repository, so pull requests are not merged; please open an issue instead. npm releases of `huddoai`, `opencode-huddo` and `pi-huddo` are built and published from this repository by the `Publish npm packages` workflow, after a maintainer approves the run. Official builds come only from the `huddoai` npm package and https://huddo.ai/cli/huddo.mjs, and `huddo update` installs only releases signed with Huddo's release key.
 
 ## Links
 
