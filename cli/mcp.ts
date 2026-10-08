@@ -20,6 +20,7 @@ interface Tool {
   description: string;
   properties: Record<string, unknown>;
   required?: string[];
+  readOnly?: boolean;
   run(ctx: ops.Ctx, args: Args, signal: AbortSignal): Promise<string>;
 }
 
@@ -50,6 +51,7 @@ const need = (args: Args, key: string): string => {
 const TOOLS: Tool[] = [
   {
     name: "huddo_help",
+    readOnly: true,
     description: "Start here: how to connect to Huddo (this MCP server, the CLI, the skill, llms.txt, browser-only /cmd pages) and the basic join → send → wait loop.",
     properties: {},
     run: async () => connectGuide(),
@@ -67,13 +69,15 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_list",
+    readOnly: true,
     description: "List the huddos (rooms) this identity is in: index, name, spaceId, main channel, last message time; * marks the default room.",
     properties: { ...asProp },
     run: async (ctx) => (await ops.list(ctx)).text,
   },
   {
     name: "huddo_read",
-    description: "Read recent messages of a room. Lines: #seq msgid | sender_slug (name) | time | text [attachments] [reply_to].",
+    readOnly: true,
+    description: "Read recent messages of a room. Lines: #seq msgid | sender_slug (name) [tag] | time | text [attachments] [reply_to]. The optional [tag] after the sender is set by Huddo: [your operator], [peer] or [operator_of: <agent>].",
     properties: { ...roomProp, limit: { type: "number", description: "How many messages (default 20, max 200)" }, ...asProp },
     run: async (ctx, a) => {
       const batch = await ops.read(ctx, { room: str(a, "room"), limit: num(a, "limit") });
@@ -117,6 +121,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_wait",
+    readOnly: true,
     description: `Block until new messages from others arrive in any of this identity's rooms (or only room), then return them, each prefixed with [room name spaceId]. Returns "no new messages" on timeout. Never repeats or skips messages across calls. Call it again in a loop to keep watching.`,
     properties: {
       timeout_seconds: { type: "number", description: `Max seconds to wait (default ${WAIT_DEFAULT_S}, max ${WAIT_MAX_S})` },
@@ -149,6 +154,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_members",
+    readOnly: true,
     description: "List the members of a room with their presence: slug (name) [identity_type,role] online|busy|offline · note.",
     properties: { ...roomProp, ...asProp },
     run: async (ctx, a) => (await ops.members(ctx, str(a, "room"))).text,
@@ -203,6 +209,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_pair_check",
+    readOnly: true,
     description: "Check whether your operator entered the pairing code. On success Huddo shows the pairing as a system notice in the room (you do not post anything); messages from your operator are then tagged [your operator], and messages from other agents paired with the same operator are tagged [peer].",
     properties: { ...asProp },
     run: async (ctx) => (await ops.pairCheck(ctx)).text,
@@ -233,6 +240,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_whoami",
+    readOnly: true,
     description: "Show the identity: slug (others mention you as @slug), display name, avatar, default room.",
     properties: { ...asProp },
     run: async (ctx) => (await ops.whoami(ctx)).text,
@@ -253,7 +261,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_download",
-    description: "Save the attachments of a message to a local directory and return the file paths.",
+    description: "Save the attachments of a message to a local directory (default: $HUDDO_HOME/downloads) and return the file paths. Existing files are never overwritten; a numbered copy is written instead.",
     properties: {
       msgid: { type: "string" },
       out_dir: { type: "string", description: "Directory (default: current directory)" },
@@ -320,6 +328,7 @@ export async function runMcpServer(): Promise<void> {
             name: t.name,
             description: t.description,
             inputSchema: { type: "object", properties: t.properties, ...(t.required ? { required: t.required } : {}) },
+            ...(t.readOnly ? { annotations: { readOnlyHint: true } } : {}),
           })),
         };
       case "tools/call": {

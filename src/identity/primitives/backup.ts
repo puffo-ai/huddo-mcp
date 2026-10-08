@@ -29,19 +29,7 @@ export async function exportKeyBackup(
 
   const key = await deriveKey(passphrase, salt);
 
-  const plaintext = encoder.encode(
-    JSON.stringify({
-      slug: identity.slug,
-      device_id: identity.device_id,
-      root_secret_key: arrayToBase64(identity.root_secret_key),
-      device_signing_secret_key: arrayToBase64(identity.device_signing_secret_key),
-      kem_secret_key: arrayToBase64(identity.kem_secret_key),
-      server_url: identity.server_url,
-      slug_binding_json: identity.slug_binding_json,
-      identity_cert_json: identity.identity_cert_json,
-      identity_profile_json: identity.identity_profile_json,
-    })
-  );
+  const plaintext = encoder.encode(JSON.stringify(identityPayload(identity)));
 
   const ciphertext = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv },
@@ -126,40 +114,44 @@ export async function decryptKeyBackup(file: Blob, passphrase: string): Promise<
     throw new BackupImportError("Wrong passphrase or corrupted backup");
   }
 
-  let identity: StoredIdentity;
   try {
-    const data = JSON.parse(new TextDecoder().decode(plaintext)) as Record<string, unknown>;
-    const stringFields = [
-      "slug",
-      "device_id",
-      "root_secret_key",
-      "device_signing_secret_key",
-      "kem_secret_key",
-      "server_url",
-    ];
-    if (stringFields.some((field) => typeof data[field] !== "string")) {
-      throw new Error("invalid backup payload");
-    }
-    identity = {
-      slug: data.slug as string,
-      device_id: data.device_id as string,
-      root_secret_key: base64ToArray(data.root_secret_key as string),
-      device_signing_secret_key: base64ToArray(data.device_signing_secret_key as string),
-      kem_secret_key: base64ToArray(data.kem_secret_key as string),
-      server_url: data.server_url as string,
-    };
-    if (typeof data.slug_binding_json === "string") {
-      identity.slug_binding_json = data.slug_binding_json;
-    }
-    if (typeof data.identity_cert_json === "string") {
-      identity.identity_cert_json = data.identity_cert_json;
-    }
-    if (typeof data.identity_profile_json === "string") {
-      identity.identity_profile_json = data.identity_profile_json;
-    }
+    return identityFromPayload(JSON.parse(new TextDecoder().decode(plaintext)));
   } catch {
     throw new BackupImportError("Wrong passphrase or corrupted backup");
   }
+}
+
+export function identityPayload(identity: StoredIdentity): Record<string, string | undefined> {
+  return {
+    slug: identity.slug,
+    device_id: identity.device_id,
+    root_secret_key: arrayToBase64(identity.root_secret_key),
+    device_signing_secret_key: arrayToBase64(identity.device_signing_secret_key),
+    kem_secret_key: arrayToBase64(identity.kem_secret_key),
+    server_url: identity.server_url,
+    slug_binding_json: identity.slug_binding_json,
+    identity_cert_json: identity.identity_cert_json,
+    identity_profile_json: identity.identity_profile_json,
+  };
+}
+
+export function identityFromPayload(raw: unknown): StoredIdentity {
+  const data = (raw ?? {}) as Record<string, unknown>;
+  const stringFields = ["slug", "device_id", "root_secret_key", "device_signing_secret_key", "kem_secret_key", "server_url"];
+  if (stringFields.some((field) => typeof data[field] !== "string")) {
+    throw new Error("invalid identity payload");
+  }
+  const identity: StoredIdentity = {
+    slug: data.slug as string,
+    device_id: data.device_id as string,
+    root_secret_key: base64ToArray(data.root_secret_key as string),
+    device_signing_secret_key: base64ToArray(data.device_signing_secret_key as string),
+    kem_secret_key: base64ToArray(data.kem_secret_key as string),
+    server_url: data.server_url as string,
+  };
+  if (typeof data.slug_binding_json === "string") identity.slug_binding_json = data.slug_binding_json;
+  if (typeof data.identity_cert_json === "string") identity.identity_cert_json = data.identity_cert_json;
+  if (typeof data.identity_profile_json === "string") identity.identity_profile_json = data.identity_profile_json;
   return identity;
 }
 

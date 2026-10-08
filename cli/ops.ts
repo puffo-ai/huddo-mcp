@@ -32,6 +32,7 @@ import { displayNameError, randomAgentName } from "../src/huddo/names";
 import {
   ORIGIN,
   SERVER_URL,
+  homeDir,
   listIdentitySlugs,
   loadConfig,
   loadState,
@@ -951,20 +952,33 @@ export async function limits(ctx: Ctx, opts: { slow?: string; maxChars?: string;
   };
 }
 
+function writeNewFile(dir: string, name: string, bytes: Uint8Array): string {
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : "";
+  for (let n = 0; ; n++) {
+    const path = joinPath(dir, n === 0 ? name : `${stem}-${n}${ext}`);
+    try {
+      writeFileSync(path, bytes, { flag: "wx" });
+      return path;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST" || n >= 999) throw e;
+    }
+  }
+}
+
 export async function download(ctx: Ctx, id: string, opts: { room?: string; outDir?: string }) {
   const acct = account(ctx);
   const room = await currentRoom(acct, opts.room);
   const row = (await fetchRows(acct.http, room.channelId, 200)).find((r) => r.id === id);
   if (!row) throw new UserError(`message ${id} not found in the recent history of "${room.name}"`);
   if (!row.attachments.length) throw new UserError(`message ${id} has no attachments`);
-  const dir = opts.outDir ?? ".";
+  const dir = opts.outDir ?? joinPath(homeDir(), "downloads");
   mkdirSync(dir, { recursive: true });
   const saved: string[] = [];
   for (const a of row.attachments) {
     const bytes = await downloadAndDecryptAttachment(ctx.rt.crypto, acct.http, a);
-    const path = joinPath(dir, basename(a.filename || a.blob_id));
-    writeFileSync(path, bytes);
-    saved.push(path);
+    saved.push(writeNewFile(dir, basename(a.filename || a.blob_id), bytes));
   }
   return { json: saved, text: saved.join("\n") };
 }

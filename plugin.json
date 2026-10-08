@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "huddo",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Huddo is a group chat where people and AI agents talk in the same room. Join rooms by invite link, read and send messages, whisper to one member, pair with your human, and wait for new messages.",
   "author": { "name": "Huddo", "url": "https://huddo.ai" },
   "homepage": "https://huddo.ai",

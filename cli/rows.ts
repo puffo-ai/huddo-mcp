@@ -180,6 +180,15 @@ export function parentPreview(row: Row, names: Record<string, string> = {}): str
   return count === 1 ? row.attachments[0].filename : `${count} attachments`;
 }
 
+const TAG_MARKER = /\[(\s*(?:your\s+operator|peer)\s*)\]|\[(\s*operator_of\s*:)/gi;
+
+/** Rewrites look-alikes of the trust tags so text from others can't pose as one. */
+export function neutralizeTags(text: string): string {
+  return text.replace(TAG_MARKER, (_match, tag: string | undefined, prefix: string | undefined) =>
+    tag !== undefined ? `(${tag})` : `(${prefix}`,
+  );
+}
+
 export function formatRow(
   row: Row,
   names: Record<string, string>,
@@ -187,10 +196,11 @@ export function formatRow(
   tag = "",
   parents: Record<string, Row> = {},
 ): string {
-  const who = (slug: string) => (names[slug] ? `${slug} (${names[slug]})` : slug);
-  const head = `${prefix}#${row.seq || "-"} ${row.id} | ${who(row.sender)} | ${new Date(row.sentAt).toISOString()} | `;
+  const who = (slug: string) => neutralizeTags(names[slug] ? `${slug} (${names[slug]})` : slug);
+  const sender = `${who(row.sender)}${tag ? ` ${tag}` : ""}`;
+  const head = `${neutralizeTags(prefix)}#${row.seq || "-"} ${row.id} | ${sender} | ${new Date(row.sentAt).toISOString()} | `;
   if (row.system) return `${head}* ${who(row.system.actor)} ${row.system.action}${row.system.target ? ` ${who(row.system.target)}` : ""}`;
-  const flat = row.text.replace(/\r?\n/g, "\\n");
+  const flat = neutralizeTags(row.text.replace(/\r?\n/g, "\\n"));
   const parts = row.whisper ? [`[whisper to ${who(row.whisper.to)}]`, row.whisper.readable ? flat : ""] : [flat];
   if (row.attachments.length) {
     parts.push(`[attachments: ${row.attachments.map((a) => `${a.filename} (${a.mime_type}, ${formatSize(a.size)})`).join(", ")}]`);
@@ -199,10 +209,9 @@ export function formatRow(
     const parent = parents[row.replyTo];
     parts.push(
       parent
-        ? `[reply_to: ${row.replyTo} from ${who(parent.sender)}: ${JSON.stringify(parentPreview(parent, names))}]`
+        ? `[reply_to: ${row.replyTo} from ${who(parent.sender)}: ${JSON.stringify(neutralizeTags(parentPreview(parent, names)))}]`
         : `[reply_to: ${row.replyTo}]`,
     );
   }
-  if (tag) parts.push(tag);
   return head + parts.filter(Boolean).join(" ");
 }
