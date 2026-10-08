@@ -9,6 +9,9 @@ import { update } from "./update";
 const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const WAIT_DEFAULT_S = 45;
 const WAIT_MAX_S = 50;
+const LISTEN_HINT =
+  "Next: start listening now. Call huddo_wait, and call it again every time it returns (with messages or on timeout) for as long as you are in the room. Replies and mentions reach you only through huddo_wait.";
+const KEEP_LISTENING = "Keep calling huddo_wait to see replies.";
 
 type Args = Record<string, unknown>;
 
@@ -60,7 +63,7 @@ const TOOLS: Tool[] = [
       ...asProp,
     },
     required: ["invite"],
-    run: async (ctx, a) => (await ops.join(ctx, need(a, "invite"), str(a, "name"))).text,
+    run: async (ctx, a) => `${(await ops.join(ctx, need(a, "invite"), str(a, "name"))).text}\n${LISTEN_HINT}`,
   },
   {
     name: "huddo_list",
@@ -92,7 +95,8 @@ const TOOLS: Tool[] = [
     run: async (ctx, a) => {
       const files = a.files === undefined ? [] : a.files;
       if (!Array.isArray(files) || files.some((f) => typeof f !== "string")) throw new ops.UserError("files must be an array of paths");
-      return (await ops.send(ctx, { text: str(a, "text"), room: str(a, "room"), replyTo: str(a, "reply_to"), files: files as string[] })).text;
+      const sent = await ops.send(ctx, { text: str(a, "text"), room: str(a, "room"), replyTo: str(a, "reply_to"), files: files as string[] });
+      return `${sent.text}\n${KEEP_LISTENING}`;
     },
   },
   {
@@ -106,8 +110,10 @@ const TOOLS: Tool[] = [
       ...asProp,
     },
     required: ["text", "to"],
-    run: async (ctx, a) =>
-      (await ops.whisper(ctx, { text: str(a, "text"), to: str(a, "to"), room: str(a, "room"), replyTo: str(a, "reply_to") })).text,
+    run: async (ctx, a) => {
+      const sent = await ops.whisper(ctx, { text: str(a, "text"), to: str(a, "to"), room: str(a, "room"), replyTo: str(a, "reply_to") });
+      return `${sent.text}\n${KEEP_LISTENING}`;
+    },
   },
   {
     name: "huddo_wait",
@@ -122,8 +128,8 @@ const TOOLS: Tool[] = [
       const batch = await ops.wait(ctx, { deadline: Date.now() + seconds * 1000, room: str(a, "room"), signal });
       if (batch.groups.length) return ops.formatBatch(batch, true);
       return batch.synced === false
-        ? `timed out after ${seconds}s before the first sync completed; no messages confirmed`
-        : `no new messages (waited ${seconds}s)`;
+        ? `timed out after ${seconds}s before the first sync completed; no messages confirmed. Call huddo_wait again now.`
+        : `no new messages (waited ${seconds}s). Call huddo_wait again now to keep listening.`;
     },
   },
   {
@@ -202,6 +208,12 @@ const TOOLS: Tool[] = [
     run: async (ctx) => (await ops.pairCheck(ctx)).text,
   },
   {
+    name: "huddo_unpair",
+    description: "End the pairing with your operator. The room where you paired shows a system notice; your operator can also unpair you from their profile menu.",
+    properties: { ...asProp },
+    run: async (ctx) => (await ops.unpair(ctx)).text,
+  },
+  {
     name: "huddo_leave",
     description: "Leave a room. Members see a 'left' notice. An owner must archive the room instead; owners cannot leave.",
     properties: { ...roomProp, ...asProp },
@@ -211,7 +223,7 @@ const TOOLS: Tool[] = [
     name: "huddo_new",
     description: "Create a new huddo (group chat) and make it the default room. Creates a guest identity on first use.",
     properties: { name: { type: "string", description: "Group name" }, ...asProp },
-    run: async (ctx, a) => (await ops.newHuddo(ctx, str(a, "name"))).text,
+    run: async (ctx, a) => `${(await ops.newHuddo(ctx, str(a, "name"))).text}\n${LISTEN_HINT}`,
   },
   {
     name: "huddo_update",
@@ -297,7 +309,7 @@ export async function runMcpServer(): Promise<void> {
           protocolVersion: PROTOCOL_VERSIONS.includes(requested) ? requested : PROTOCOL_VERSIONS[0],
           capabilities: { tools: {} },
           serverInfo: { name: "huddo", version: VERSION },
-          instructions: "Huddo group chat for people and agents. Call huddo_help first for the connection guide. Join with huddo_join and an invite link, then loop huddo_wait to watch every room; reply with huddo_send using the spaceId printed with each message as room. Always answer when someone mentions your @slug (see huddo_whoami).",
+          instructions: "Huddo group chat for people and agents. Call huddo_help first for the connection guide. Join with huddo_join and an invite link, then loop huddo_wait to watch every room; reply with huddo_send using the spaceId printed with each message as room. Always answer when someone mentions your @slug (see huddo_whoami). Never stop calling huddo_wait while you are in a room: people expect you to answer, and you only see their messages while waiting.",
         };
       }
       case "ping":

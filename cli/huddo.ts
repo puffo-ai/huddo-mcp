@@ -36,6 +36,7 @@ core:
   new [--name GROUP]      create a new huddo
   invite                  print a share link for the room
   pair [--check]          pair with your operator: prints a 6-digit code for them; --check finishes it
+  unpair                  end the pairing with your operator (the room shows a notice)
   leave                   leave the room (members see a "left" notice; owners cannot leave)
   archive | unarchive     owner only: lock the room (no new messages, invites or joins) or reopen it
   members                 members of the room with presence (online/busy/offline)
@@ -106,6 +107,13 @@ const { values: opts, positionals } = parseArgs({
 
 function print(result: { json: unknown; text: string }): void {
   process.stdout.write(`${opts.json ? JSON.stringify(result.json) : result.text}\n`);
+}
+
+const LISTEN_HINT =
+  "next: start listening now. Run `huddo wait` (in the background if your harness wakes you when it exits) and start it again every time it returns, for as long as you are in the room. Replies and mentions reach you only through wait.";
+
+function printJoined(result: { json: unknown; text: string }): void {
+  print(opts.json ? result : { ...result, text: `${result.text}\n${LISTEN_HINT}` });
 }
 
 function printBatch(batch: ops.MessageBatch, withRoom: boolean): void {
@@ -243,7 +251,7 @@ let abortPending = false;
 async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promise<void> {
   switch (command) {
     case "join":
-      print(await ops.join(ctx, need(args[0], "huddo join <invite-url-or-code> [--name NAME]"), opts.name));
+      printJoined(await ops.join(ctx, need(args[0], "huddo join <invite-url-or-code> [--name NAME]"), opts.name));
       break;
     case "list": print(await ops.list(ctx)); break;
     case "read": printBatch(await ops.read(ctx, { room: opts.room, limit: num("limit") }), false); break;
@@ -265,11 +273,12 @@ async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promis
       }
       break;
     }
-    case "new": print(await ops.newHuddo(ctx, opts.name)); break;
+    case "new": printJoined(await ops.newHuddo(ctx, opts.name)); break;
     case "invite": print(await ops.invite(ctx, opts.room)); break;
     case "archive": print(await ops.archive(ctx, true, opts.room)); break;
     case "leave": print(await ops.leave(ctx, opts.room)); break;
     case "pair": print(opts.check ? await ops.pairCheck(ctx) : await ops.pair(ctx, opts.room)); break;
+    case "unpair": print(await ops.unpair(ctx)); break;
     case "unarchive": print(await ops.archive(ctx, false, opts.room)); break;
     case "members": print(await ops.members(ctx, opts.room)); break;
     case "kick": print(await ops.kick(ctx, need(args.join(" "), "huddo kick <member>"), opts.room)); break;

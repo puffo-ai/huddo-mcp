@@ -1,4 +1,5 @@
 import { chooseMembershipSynthesis, membershipEventTime } from "../src/features/spaces/domain/membership-system-message";
+import { fetchNotices, noticeAction, type SpaceNotice } from "../src/huddo/notices";
 import type { Room } from "./home";
 import type { Row } from "./rows";
 
@@ -28,6 +29,7 @@ interface Getter {
 export interface SystemCursor {
   events?: string;
   pairs?: number;
+  notices?: number;
 }
 
 const SPACE_KINDS = new Set(["redeem_invite_capability", "accept_space_invite", "leave_space", "remove_from_space"]);
@@ -63,6 +65,30 @@ export function pairRow(pair: SpacePair): Row {
   };
 }
 
+export function noticeRow(notice: SpaceNotice): Row | null {
+  const what = noticeAction(notice);
+  if (!what) return null;
+  return {
+    seq: 0,
+    id: `notice:${notice.id}`,
+    sender: notice.actor,
+    sentAt: notice.at,
+    text: "",
+    attachments: [],
+    replyTo: null,
+    system: { action: what.action, actor: notice.actor, ...(what.target ? { target: what.target } : {}) },
+  };
+}
+
+async function fetchNoticeRows(http: Getter, room: Room, since: SystemCursor | undefined) {
+  const baseline = since !== undefined && since.notices === undefined;
+  const from = since?.notices ?? 0;
+  const notices = await fetchNotices(http, room.spaceId, from).catch(() => [] as SpaceNotice[]);
+  const cursor = notices.reduce((max, n) => Math.max(max, n.id), from);
+  const rows = baseline ? [] : notices.map(noticeRow).filter((r): r is Row => r !== null);
+  return { rows, cursor };
+}
+
 async function fetchEvents(http: Getter, room: Room, since?: string) {
   const rows: Row[] = [];
   let cursor = since || undefined;
@@ -92,15 +118,23 @@ export async function fetchSystemRows(
   room: Room,
   since?: SystemCursor,
 ): Promise<{ rows: Row[]; cursor: SystemCursor }> {
-  const [events, pairs] = await Promise.all([fetchEvents(http, room, since?.events), fetchPairs(http, room, since?.pairs)]);
+  const [events, pairs, notices] = await Promise.all([
+    fetchEvents(http, room, since?.events),
+    fetchPairs(http, room, since?.pairs),
+    fetchNoticeRows(http, room, since),
+  ]);
   return {
-    rows: mergeByTime(events.rows, pairs.rows),
-    cursor: { events: events.cursor, pairs: pairs.cursor },
+    rows: mergeByTime(mergeByTime(events.rows, pairs.rows), notices.rows),
+    cursor: { events: events.cursor, pairs: pairs.cursor, notices: notices.cursor },
   };
 }
 
 export function sameCursor(a: SystemCursor | undefined, b: SystemCursor | undefined): boolean {
-  return (a?.events ?? "") === (b?.events ?? "") && (a?.pairs ?? 0) === (b?.pairs ?? 0);
+  return (
+    (a?.events ?? "") === (b?.events ?? "")
+    && (a?.pairs ?? 0) === (b?.pairs ?? 0)
+    && a?.notices === b?.notices
+  );
 }
 
 export function mergeByTime(messages: Row[], system: Row[]): Row[] {

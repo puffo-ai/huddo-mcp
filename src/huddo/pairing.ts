@@ -71,6 +71,10 @@ export function pairingResult(http: SignedHttp, spaceId: string, code: string) {
   );
 }
 
+export function unpairAgent(http: SignedHttp, agent: string) {
+  return call(() => http.post<{ agent: string; operator: string }>("/v2/pairings/unpair", { agent }));
+}
+
 export async function fetchPairs(http: SignedHttp, slugs: readonly string[]): Promise<PairMap> {
   const q = slugsQuery(slugs);
   return q ? call(() => http.get<PairMap>(`/v2/pairings?slugs=${q}`)) : {};

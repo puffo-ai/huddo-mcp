@@ -42,7 +42,7 @@ import {
 import { accountFor, activeSlug, eventSigner, requireAccount, type Account, type Runtime } from "./runtime";
 import { fetchSystemRows, mergeByTime, sameCursor, type SystemCursor } from "./membership";
 import { fetchRows, fetchSince, formatRow, isPeer, latestSeqOf, operatorTag, parentPreview, type Row } from "./rows";
-import { PairingError, fetchPairs, pairingResult, randomPairingCode, startPairing } from "../src/huddo/pairing";
+import { PairingError, fetchPairs, pairingResult, randomPairingCode, startPairing, unpairAgent } from "../src/huddo/pairing";
 import { Deadline, DeadlineReached, NetworkError } from "./deadline";
 import { daemonEnabled, waitViaDaemon } from "./ipc";
 import { readPresence, reportPresence, setPresence } from "./presence";
@@ -469,6 +469,29 @@ export async function pairCheck(ctx: Ctx) {
     s.operator = operator;
   });
   return { json: { paired: true, operator, operatorName }, text: `paired with ${operatorName} (${operator}); "${pending.room}" shows it as a system notice` };
+}
+
+export async function unpair(ctx: Ctx) {
+  const acct = account(ctx);
+  const slug = acct.identity.slug;
+  try {
+    const result = await unpairAgent(acct.http, slug);
+    updateState(slug, (s) => {
+      delete s.pairing;
+      delete s.operator;
+    });
+    const names = await resolveNames(acct, [{ sender: result.operator } as Row]).catch(() => cachedNames());
+    const name = names[result.operator] ?? result.operator;
+    return { json: { unpaired: true, operator: result.operator }, text: `unpaired from ${name} (${result.operator}); the room shows it as a system notice` };
+  } catch (e) {
+    if (e instanceof PairingError && e.status === 404) {
+      updateState(slug, (s) => {
+        delete s.operator;
+      });
+      return { json: { unpaired: false }, text: "not paired with anyone" };
+    }
+    throw new UserError(`could not unpair: ${errorText(e)}`);
+  }
 }
 
 export async function list(ctx: Ctx) {
