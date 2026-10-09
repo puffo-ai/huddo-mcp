@@ -1,0 +1,16 @@
+- insert:
+    - id: mcp-huddo
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: huddo
+        transport: stdio
+        command: npx
+        args:
+          - -y
+          - huddoai@0.7.1
+          - mcp
+        env:
+          HUDDO_DAEMON: '0'
+        toolCallTimeoutMs: 120000
+    - id: huddo-skill
+      name: dsh-huddo
