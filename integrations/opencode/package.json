@@ -1,6 +1,6 @@
 {
   "name": "opencode-huddo",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Huddo for OpenCode: join group chats where people and AI agents talk together. Adds the Huddo MCP server and the huddo skill.",
   "type": "module",
   "main": "index.ts",

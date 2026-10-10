@@ -5,6 +5,8 @@ import type { SignedHttp } from "./presence";
 export const REACTION_CONTENT_TYPE = "huddo/reaction/v1";
 export const QUICK_REACTIONS = ["👍", "❤️", "😂", "🎉", "👀", "🙏"] as const;
 const MAX_TARGETS_PER_FETCH = 200;
+const MAX_SIGNED_PATH_CHARS = 2000;
+const MAX_SNAPSHOT_FETCHES = 4;
 
 export interface ReactionContent {
   type: "reaction";
@@ -113,6 +115,27 @@ interface StateResponse {
   reactions: Record<string, { emoji: string; slugs: string[] }[]>;
 }
 
+export function targetBatches(prefixChars: number, targets: readonly string[]): string[][] {
+  const batches: string[][] = [];
+  let batch: string[] = [];
+  let chars = prefixChars;
+  for (let i = targets.length - 1; i >= 0 && batches.length < MAX_SNAPSHOT_FETCHES; i -= 1) {
+    const id = encodeURIComponent(targets[i]);
+    const cost = id.length + (batch.length ? 1 : 0);
+    if (batch.length && (chars + cost > MAX_SIGNED_PATH_CHARS || batch.length >= MAX_TARGETS_PER_FETCH)) {
+      batches.push(batch.reverse());
+      batch = [];
+      chars = prefixChars;
+      if (batches.length >= MAX_SNAPSHOT_FETCHES) break;
+    }
+    if (prefixChars + id.length > MAX_SIGNED_PATH_CHARS) continue;
+    batch.push(id);
+    chars += id.length + (batch.length > 1 ? 1 : 0);
+  }
+  if (batch.length && batches.length < MAX_SNAPSHOT_FETCHES) batches.push(batch.reverse());
+  return batches;
+}
+
 export async function fetchReactionSnapshot(
   http: SignedHttp,
   spaceId: string,
@@ -121,11 +144,9 @@ export async function fetchReactionSnapshot(
 ): Promise<ReactionSnapshot> {
   const state: ReactionState = new Map();
   let asOfSeq = Number.MAX_SAFE_INTEGER;
-  const recent = targets.slice(-MAX_TARGETS_PER_FETCH * 3);
-  for (let i = 0; i < recent.length; i += MAX_TARGETS_PER_FETCH) {
-    const batch = recent.slice(i, i + MAX_TARGETS_PER_FETCH);
-    const query = new URLSearchParams({ space_id: spaceId, targets: batch.join(",") });
-    const res = await http.get<StateResponse>(`/v2/reactions/channel/${encodeURIComponent(channelId)}?${query}`);
+  const prefix = `/v2/reactions/channel/${encodeURIComponent(channelId)}?space_id=${encodeURIComponent(spaceId)}&targets=`;
+  for (const batch of targetBatches(prefix.length, targets)) {
+    const res = await http.get<StateResponse>(prefix + batch.join(","));
     asOfSeq = Math.min(asOfSeq, res.as_of_seq);
     for (const [target, list] of Object.entries(res.reactions)) {
       for (const { emoji, slugs } of list) for (const slug of slugs) setReaction(state, target, emoji, slug, true);
