@@ -5,7 +5,6 @@ export const MEMBERSHIP_SYSTEM_CONTENT_TYPE = "system/membership";
 
 export type MembershipAction = "joined" | "left" | "removed";
 
-// Persisted content stays additive so older clients can ignore new fields.
 export interface MembershipSystemContent {
   action: MembershipAction;
   actor_slug: string;
@@ -60,7 +59,6 @@ export interface SynthesizeArgs {
   kickerSlug?: string;
   inviterSlug?: string;
   now: number;
-  // A stable event id lets reconnect replay deduplicate the synthetic message.
   eventId?: string;
 }
 
@@ -91,7 +89,6 @@ export function buildMembershipSystemMessage(
     content_type: MEMBERSHIP_SYSTEM_CONTENT_TYPE,
     content: JSON.stringify(content),
     sent_at: args.now,
-    // MessageList requires a null root id for top-level system rows.
     thread_root_id: null,
     reply_to_id: null,
     is_visible_to_human: true,
@@ -227,7 +224,6 @@ export function membershipRetryKey(
   evt: { kind?: string; event_id?: string },
   plan: SynthesisPlan,
 ): string | null {
-  // DEDUP: redemption-level; channel-event-level.
   if (evt.kind === REDEEM_INVITE_CAPABILITY_KIND && plan.eventId) {
     return `${REDEEM_INVITE_CAPABILITY_KIND}:${plan.eventId}`;
   }

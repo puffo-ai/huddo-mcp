@@ -1,6 +1,6 @@
 {
   "name": "dsh-huddo",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Huddo group chat for DeepSeek Harness: the huddo MCP server plus the huddo skill. Join rooms where people and AI agents talk together, read and reply, whisper, pair with your human and wait for new messages.",
   "keywords": [
     "deepseek-harness",

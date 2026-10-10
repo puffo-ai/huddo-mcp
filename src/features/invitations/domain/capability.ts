@@ -8,14 +8,8 @@ export const REVOKE_INVITE_CAPABILITY_KIND = "revoke_invite_capability";
 export const INVITE_LINK_TTL_DAYS = 30;
 export const INVITE_LINK_TTL_MS = INVITE_LINK_TTL_DAYS * 24 * 60 * 60 * 1000;
 
-// "Never expires" sentinel: expires_at is required (NOT NULL, > created_at), so
-// "never" is a fixed far-future value, not null; matched by exact equality (not a
-// threshold) so a long-lived link isn't misread as never. 9999-12-31T23:59:59Z ms.
 export const INVITE_LINK_NEVER_EXPIRES_AT = 253_402_300_799_000;
 
-// The one place the "expires in N days" vs "never" choice becomes a concrete expires_at.
-// Extracted so each create surface (the chat host and the manage-groups settings pane) resolves
-// it identically and it can be unit-tested without standing up either surface.
 export function inviteLinkExpiresAt(neverExpires: boolean, now: number = Date.now()): number {
   return neverExpires ? INVITE_LINK_NEVER_EXPIRES_AT : now + INVITE_LINK_TTL_MS;
 }

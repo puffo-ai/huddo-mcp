@@ -13,8 +13,6 @@ import type { CreatedChannel, CreatedSpace } from "../domain";
 export type SignedEvent = SignedSpaceEvent;
 const generateNonce = generateEventNonce;
 
-// Keep this construction aligned with core-v2 build_signed_event; the server
-// resolves signer_subkey_id through certificate sync before verification.
 export function signEvent(
   crypto: CryptoOps,
   kind: string,
@@ -118,7 +116,6 @@ export async function inviteToSpace(
   spaceId: string,
   inviteeSlug: string,
 ): Promise<string> {
-  // invitee_role is intentionally omitted to match the server's optional field.
   const payload = {
     space_id: spaceId,
     invitee_slug: inviteeSlug,
@@ -136,7 +133,6 @@ export async function inviteToSpace(
     http,
   );
   await submitSpacesMembershipEvents(http, spaceId, [event]);
-  // Follow-up notifications reference the invite event without another read.
   return event.event_id;
 }
 
@@ -168,8 +164,6 @@ export async function inviteToChannel(
   await submitSpacesMembershipEvents(http, spaceId, [event]);
 }
 
-// The server applies batches in order, so the space invite must come first;
-// a duplicate pending space invite is a no-op and does not block channel invite.
 export async function inviteToSpaceAndChannel(
   http: PuffoHttpClient,
   crypto: CryptoOps,
@@ -382,7 +376,6 @@ export async function removeFromSpace(
   spaceId: string,
   removedSlug: string,
 ): Promise<void> {
-  // Owners cannot be kicked; self-removal must use leaveSpace instead.
   const payload = {
     space_id: spaceId,
     removed_slug: removedSlug,
@@ -408,7 +401,6 @@ export async function leaveSpace(
   signer: SignerSession,
   spaceId: string,
 ): Promise<void> {
-  // The current owner must transfer ownership before leaving.
   const payload = {
     space_id: spaceId,
     effective_from: Date.now(),
@@ -435,7 +427,6 @@ export async function removeFromChannel(
   channelId: string,
   removedSlug: string,
 ): Promise<void> {
-  // Public topics reject channel-level removal; remove from the space instead.
   const payload = {
     space_id: spaceId,
     channel_id: channelId,
@@ -463,7 +454,6 @@ export async function leaveChannel(
   spaceId: string,
   channelId: string,
 ): Promise<void> {
-  // Public topics inherit space membership and cannot be left independently.
   const payload = {
     space_id: spaceId,
     channel_id: channelId,
@@ -491,7 +481,6 @@ export async function updateMemberRole(
   targetSlug: string,
   newRole: "admin" | "member",
 ): Promise<void> {
-  // Only the owner may change roles; ownership changes use the transfer event.
   const payload = {
     space_id: spaceId,
     target_slug: targetSlug,
@@ -519,7 +508,6 @@ export async function transferSpaceOwnership(
   spaceId: string,
   newOwnerSlug: string,
 ): Promise<void> {
-  // The server demotes the old owner and adds the new owner to every topic.
   const payload = {
     space_id: spaceId,
     new_owner_slug: newOwnerSlug,

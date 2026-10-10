@@ -5,7 +5,6 @@ export interface IdentityCert {
   version: number;
   root_public_key: string;
   identity_type: string;
-  // MUST be present (null for humans) — server reserializes None as null, signature won't verify otherwise.
   declared_operator_public_key: string | null;
   self_signature: string;
 }
@@ -19,7 +18,6 @@ export interface SlugBinding {
   self_signature: string;
 }
 
-// hpke_ciphertext is the combined encapped-key || HPKE ciphertext (base64url).
 export interface RootKeyEnvelope {
   type: string;
   version: number;

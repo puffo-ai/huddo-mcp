@@ -4,7 +4,6 @@ import type { Channel, Space } from "../domain";
 export async function fetchSpaces(
   http: PuffoHttpClient
 ): Promise<Space[]> {
-  // Current servers return space_id; relay-mock and older servers return id.
   const resp = await http.get<{
     spaces: {
       space_id?: string;
@@ -30,8 +29,6 @@ export async function fetchChannels(
   http: PuffoHttpClient,
   spaceId: string,
 ): Promise<Channel[]> {
-  // The materialized table is authoritative for visibility, renames, and
-  // soft-deletes; replaying create_channel events resurrects stale rows.
   const resp = await http.get<{
     channels: {
       channel_id: string;

@@ -20,7 +20,6 @@ export interface SendMessageParams {
   crypto: CryptoOps;
   identity: StoredIdentity;
   subkeyId: string;
-  // Signs with the rotating subkey; verifier resolves pk via /certs/sync.
   subkeySecretKey: Uint8Array;
   envelopeKind: EnvelopeKind;
   spaceId?: string;
@@ -29,8 +28,6 @@ export interface SendMessageParams {
   contentType: string;
   content: unknown;
   recipients: { device_id: string; kem_public_key: Uint8Array }[];
-  // Slugs that produced `recipients` — supplementation refetches them.
-  // Absent → supplementation degrades to warn-only.
   recipientSlugs?: string[];
   threadRootId?: string;
   replyToId?: string;
@@ -75,7 +72,6 @@ export type MessageEnvelopeSupplement =
       onComplete?(): void;
     };
 
-/** Build the wire envelope without posting it. */
 export function buildMessageEnvelope(
   params: SendMessageParams,
   encrypt: boolean = params.channelIsEncrypted !== false,
@@ -105,7 +101,6 @@ export function buildMessageEnvelope(
   return encryptMessage(params.crypto, params.subkeySecretKey, input);
 }
 
-/** Post a pre-built envelope; original sends may supplement missing devices. */
 export async function postMessageEnvelope(
   http: PuffoHttpClient,
   envelope: MessageEnvelope,
@@ -136,9 +131,6 @@ export async function postMessageEnvelope(
     envelope as unknown as Record<string, unknown>,
   );
 
-  // The original send is already durable, but authority-backed supplementation
-  // owns a short-lived Wasm handle. Await that callback so its caller cannot
-  // finish the handle before missing-device wrapping completes.
   if (
     supplement &&
     response.missing_devices &&
@@ -182,9 +174,6 @@ export async function sendMessage(
     } catch (error) {
       const wanted = formatMismatch(error);
       if (wanted === null || wanted === encrypt || attempt === 1) throw error;
-      // Both server endpoints reject a format mismatch before inserting the
-      // envelope. Rebuilding with a new envelope_id is safe only while that
-      // server-side ordering remains true.
       if (wanted && effectiveParams.recipients.length === 0) {
         if (!params.resolveRecipientsForEncryption) throw error;
         const resolved = await params.resolveRecipientsForEncryption();
@@ -202,7 +191,6 @@ export async function sendMessage(
         try {
           await params.refreshChannelPolicy(params.channelId);
         } catch {
-          // The current send recovered; refreshing only warms the next one.
         }
       }
     }
@@ -251,8 +239,6 @@ async function supplementMissingDevices(
     return;
   }
 
-  // envelope_id + nonce + ciphertext stay byte-identical — server
-  // rejects same-id retries that mutate the context fields.
   const supplementation: MessageEnvelope = {
     ...originalEnvelope,
     recipients: wrapAdditionalRecipients(

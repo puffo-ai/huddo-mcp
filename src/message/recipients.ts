@@ -4,16 +4,10 @@ import { HttpError } from "../http/types";
 
 export interface RecipientDevice {
   device_id: string;
-  // The slug that owns this device (from the device_cert). Surfaced
-  // separately so callers can run an envelope-side membership check
-  // before posting — the server enforces the same rule (PR puffo-
-  // server#54), but failing client-side gives a useful error
-  // message and avoids the round-trip.
   slug: string;
   kem_public_key: Uint8Array;
 }
 
-// /certs/active response shape — see puffo-server certs.rs::CertsActiveResponse.
 interface CertsActiveEntry {
   slug: string;
   device_id: string;
@@ -26,8 +20,6 @@ interface CertsActiveResponse {
   devices: CertsActiveEntry[];
 }
 
-// Legacy /certs/sync shape — still used by ``fetchSenderSubkeyPks``
-// below to walk the historical subkey chain.
 interface CertSyncEntry {
   seq: number;
   kind: string;
@@ -161,10 +153,6 @@ function chunkRecipientSlugs(slugs: string[]): string[][] {
   return chunks;
 }
 
-// Send-time recipient resolution via /certs/active (returns the
-// current device_cert per device_id, HPKE pubkey already extracted).
-// Falls back to the legacy /certs/sync walk if the server is too old
-// to expose /certs/active.
 export async function fetchRecipientDevices(
   http: PuffoHttpClient,
   crypto: CryptoOps,
@@ -198,7 +186,6 @@ export async function fetchRecipientDevices(
         kem_public_key: crypto.base64urlDecode(entry.kem_public_key),
       });
     } catch {
-      /* malformed base64 — skip the entry */
     }
   }
   return recipients;
@@ -247,17 +234,12 @@ async function fetchRecipientDevicesFromLegacySync(
         kem_public_key: crypto.base64urlDecode(kemPublicKey),
       });
     } catch {
-      /* malformed legacy cert — skip */
     }
   }
 
   return recipients;
 }
 
-// Client-side mirror of the server's channel-member-recipient check.
-// Surfaces the offending slug before the wire (server returns 403);
-// `allowedSlugs` must come from the same local membership cache that
-// produced `recipients`.
 export function validateRecipientsForChannel(
   recipients: RecipientDevice[],
   allowedSlugs: Iterable<string>,
@@ -273,8 +255,6 @@ export function validateRecipientsForChannel(
   }
 }
 
-// DM variant — sender's own devices (multi-device read-back) + the
-// named peer's devices are the only allowed recipients.
 export function validateRecipientsForDm(
   recipients: RecipientDevice[],
   senderSlug: string,
@@ -290,9 +270,6 @@ export function validateRecipientsForDm(
   }
 }
 
-// Per-sender subkey pk index. `since` is the high-water /certs/sync
-// `seq`; passing it back makes refresh a delta walk (subkey_certs are
-// append-only).
 export interface SenderSubkeyIndex {
   pkBySubkeyId: Map<string, Uint8Array>;
   deviceIdBySubkeyId: Map<string, string>;
@@ -303,14 +280,11 @@ export function emptySenderSubkeyIndex(): SenderSubkeyIndex {
   return { pkBySubkeyId: new Map(), deviceIdBySubkeyId: new Map(), since: "0" };
 }
 
-/// Durable home of the per-sender index.
 export interface SenderCertStore {
   getSenderSubkeyIndex(sender: string): SenderSubkeyIndex | null | Promise<SenderSubkeyIndex | null>;
   saveSenderSubkeyIndex(sender: string, index: SenderSubkeyIndex): void | Promise<void>;
 }
 
-/// Cache lookup with durable-store fallback so a fresh boot doesn't
-/// re-walk cert chains; stale entries self-heal via unknown_subkey.
 export async function senderIndexFor(
   cache: Map<string, SenderSubkeyIndex>,
   sender: string,
@@ -319,17 +293,12 @@ export async function senderIndexFor(
   let index = cache.get(sender);
   if (!index) {
     index = (store ? await store.getSenderSubkeyIndex(sender) : null) ?? emptySenderSubkeyIndex();
-    // Older durable caches did not retain the cert's device binding. Rewalk
-    // the append-only cert chain once so candidate admission never invents or
-    // guesses a device id for an otherwise cached subkey.
     if (index.deviceIdBySubkeyId.size < index.pkBySubkeyId.size) index.since = "0";
     cache.set(sender, index);
   }
   return index;
 }
 
-// Walk /certs/sync forward from `index.since`, mutating `index` with
-// any new subkey_cert entries. Also returns it for chaining.
 export async function refreshSenderSubkeyIndex(
   http: PuffoHttpClient,
   crypto: CryptoOps,
@@ -355,7 +324,6 @@ export async function refreshSenderSubkeyIndex(
             index.pkBySubkeyId.set(subkeyId, crypto.base64urlDecode(pkB64));
             if (deviceId) index.deviceIdBySubkeyId.set(subkeyId, deviceId);
           } catch {
-            /* malformed base64 — skip */
           }
         }
         if (subkeyId && deviceId && !index.deviceIdBySubkeyId.has(subkeyId)) {
@@ -374,8 +342,6 @@ export async function refreshSenderSubkeyIndex(
   return index;
 }
 
-// Legacy array-of-pks fetch used by event/invite, which doesn't
-// know the inviter's subkey_id outside its own loop.
 export async function fetchSenderSubkeyPks(
   http: PuffoHttpClient,
   crypto: CryptoOps,

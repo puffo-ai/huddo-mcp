@@ -18,6 +18,7 @@ import {
 import { buildPlaintextMessage } from "../src/message/core/encrypt";
 import { fetchRecipientDevices } from "../src/message/recipients";
 import { sealWhisper, WHISPER_CONTENT_TYPE } from "../src/huddo/whisper";
+import { REACTION_CONTENT_TYPE, fetchReactionSnapshot, reactionChips, reactionContent } from "../src/huddo/reactions";
 import { postMessageEnvelope } from "../src/message";
 import {
   ATTACHMENT_CONTENT_TYPE,
@@ -525,6 +526,17 @@ export async function use(ctx: Ctx, roomArg: string) {
   return { json: room, text: `default room: "${room.name}" (${room.spaceId})` };
 }
 
+async function withReactions(acct: Account, room: Room, rows: Row[]): Promise<Row[]> {
+  const ids = rows.filter((r) => !r.system && !r.whisper).map((r) => r.id);
+  if (ids.length === 0) return rows;
+  const snapshot = await fetchReactionSnapshot(acct.http, room.spaceId, room.channelId, ids).catch(() => null);
+  if (!snapshot) return rows;
+  return rows.map((r) => {
+    const chips = reactionChips(snapshot.state, r.id, acct.identity.slug);
+    return chips.length ? { ...r, reactions: chips.map((c) => ({ emoji: c.emoji, by: c.slugs })) } : r;
+  });
+}
+
 export async function read(ctx: Ctx, opts: { room?: string; limit?: number }): Promise<MessageBatch> {
   const acct = account(ctx);
   const room = await currentRoom(acct, opts.room);
@@ -532,7 +544,7 @@ export async function read(ctx: Ctx, opts: { room?: string; limit?: number }): P
   const messages = (await fetchRows(acct.http, room.channelId, limit)).slice(-limit);
   const events = await fetchSystemRows(acct.http, room).catch(() => ({ rows: [], cursor: undefined }));
   const from = messages.length >= limit ? (messages[0]?.sentAt ?? 0) : 0;
-  const rows = mergeByTime(messages, events.rows.filter((r) => r.sentAt >= from));
+  const rows = await withReactions(acct, room, mergeByTime(messages, events.rows.filter((r) => r.sentAt >= from)));
   const names = await resolveNames(acct, rows);
   advanceCursor(acct.identity.slug, room.channelId, messages.reduce((m, r) => Math.max(m, r.seq), 0));
   setSystemCursor(acct.identity.slug, room.channelId, events.cursor);
@@ -828,6 +840,31 @@ async function postWithLimits(acct: Account, envelope: Parameters<typeof postMes
       throw e;
     }
   }
+}
+
+export async function react(ctx: Ctx, opts: { message?: string; emoji?: string; remove?: boolean; room?: string }) {
+  const message = opts.message?.trim() ?? "";
+  const emoji = opts.emoji?.trim() ?? "";
+  if (!message) throw new UserError("react needs the message id (msg_...)");
+  if (!emoji || /\s/.test(emoji)) throw new UserError("react needs one emoji, e.g. 👍");
+  const acct = account(ctx);
+  const room = await currentRoom(acct, opts.room);
+  const signer = await eventSigner(ctx.rt, acct);
+  const envelope = buildPlaintextMessage(ctx.rt.crypto, signer.subkeySecretKey, {
+    envelope_kind: "channel",
+    sender_slug: signer.slug,
+    sender_subkey_id: signer.subkeyId,
+    space_id: room.spaceId,
+    channel_id: room.channelId,
+    content_type: REACTION_CONTENT_TYPE,
+    content: reactionContent(message, emoji, !opts.remove),
+    recipients: [],
+  });
+  const posted = await postWithLimits(acct, envelope);
+  return {
+    json: { id: envelope.envelope_id, seq: posted.seq ?? null, spaceId: room.spaceId, channelId: room.channelId, room: room.name, message, emoji, removed: Boolean(opts.remove) },
+    text: `${opts.remove ? "removed" : "reacted"} ${emoji} ${opts.remove ? "from" : "to"} ${message} in "${room.name}" (${room.spaceId})`,
+  };
 }
 
 export async function whisper(ctx: Ctx, opts: { text?: string; to?: string; room?: string; replyTo?: string }) {

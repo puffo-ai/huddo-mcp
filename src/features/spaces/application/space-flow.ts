@@ -1,6 +1,5 @@
 import type { CreatedChannel, CreatedSpace } from "../domain";
 
-// Capital G is intentional; lowercase general belongs only to older spaces.
 export const DEFAULT_CHANNEL_NAME = "General";
 
 export interface CreatedSpaceWithGeneral {
@@ -26,8 +25,6 @@ export async function createSpaceWithGeneral(
 ): Promise<CreatedSpaceWithGeneral> {
   const space = await commands.createSpace(spaceName);
 
-  // Servers since f06a15e emit General with CreateSpace; this fallback keeps
-  // compatibility with older deployments where defaultChannel is absent.
   let channelId: string;
   let channelName: string;
   let isPublic: boolean;

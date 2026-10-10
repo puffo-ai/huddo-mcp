@@ -1,6 +1,3 @@
-// This cap is enforced by every web form that accepts an avatar and mirrored
-// by puffo-agent in portal/api/handlers.py. Keep both repositories in sync
-// when changing it.
 export const MAX_PROFILE_AVATAR_BYTES = 4 * 1024 * 1024;
 export const MAX_PROFILE_AVATAR_LABEL = "4 MiB";
 

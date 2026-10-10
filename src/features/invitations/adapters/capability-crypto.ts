@@ -37,7 +37,6 @@ export async function deriveInviteSecretKey(
 export async function generateInviteCapabilityKey(
   crypto: CryptoOps,
 ): Promise<InviteCapabilityMaterial> {
-  // VESTIGIAL(PUF-358): unique public key; private material discarded.
   const seed = crypto.generateRandomBytes(INVITE_SEED_BYTES);
   const secretKey = await deriveInviteSecretKey(seed);
   const publicKey = crypto.ed25519PublicKeyFromSecret(secretKey);

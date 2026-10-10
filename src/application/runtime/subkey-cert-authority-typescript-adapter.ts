@@ -1,7 +1,6 @@
 import { createSubkeyCert } from "../../identity/certs/subkey";
 import type { SubkeyCertAuthorityPort } from "./subkey-cert-authority-port";
 
-/** Previous clean-start authority retained for rollback before this prefix. */
 export function createTypeScriptSubkeyCertAuthorityPort(): SubkeyCertAuthorityPort {
   return {
     authority: "typescript",

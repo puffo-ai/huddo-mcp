@@ -1,8 +1,3 @@
-// Subkey rotation coordination: mints a fresh subkey cert under the
-// device key, POSTs it to /devices/subkeys, persists the new session in
-// the keystore. Owns the cross-instance dedup + listener registry so
-// every PuffoHttpClient sharing a slug observes a single rotation.
-
 import type { CryptoOps } from "../../http/types";
 import { HttpError, HttpTimeoutError } from "../../http/types";
 import { transportSigningPort } from "../../application/runtime/transport-signing-port";
@@ -11,18 +6,10 @@ import { SUBKEY_TTL_MS } from "../../constants/subkey";
 import type { BrowserKeyStore, Session, StoredIdentity } from "../primitives/keystore";
 import { authHeadersToRecord } from "./signing";
 
-// Multiple stores / hooks construct their own PuffoHttpClient against
-// the same factory, so instance-scoped state can't dedup the
-// thundering-herd on initial load — N services racing past
-// ensureSubkey with no session would each fire a separate
-// POST /devices/subkeys (production incident 2026-05-19 saw 6
-// simultaneous 201s after a hard refresh post-rotation). One in-flight
-// POST per slug is all we ever need.
 const rotatingPromises = new Map<string, Promise<Record<string, unknown>>>();
 const rotationListeners = new Map<string, Set<() => void | Promise<void>>>();
 export const SUBKEY_ROTATION_TIMEOUT_MS = 60_000;
 
-/** Observable count used by clean-start rollback eligibility. */
 let activeRotationTransactions = 0;
 export const activeSubkeyRotationTransactionCount = (): number => activeRotationTransactions;
 
@@ -57,11 +44,6 @@ export async function postSubkeyCertificate(
   }
 }
 
-// Subscribe to subkey-rotation events for a given slug. Fires once per
-// successful rotation, AFTER the new session has been persisted — a
-// callback reading the keystore inside the handler is guaranteed to
-// see the new subkey. Intended consumer: http/ws-client.ts, which
-// has to force a reconnect under the fresh subkey.
 export function onSubkeyRotated(slug: string, cb: () => void | Promise<void>): () => void {
   let set = rotationListeners.get(slug);
   if (!set) {
@@ -74,8 +56,6 @@ export function onSubkeyRotated(slug: string, cb: () => void | Promise<void>): (
   };
 }
 
-// Wraps an actual rotation call: dedups concurrent callers for the same
-// server/account owner and fans out to listeners on success only.
 export function coordinateRotation(
   serverUrl: string,
   slug: string,
@@ -91,8 +71,6 @@ export function coordinateRotation(
       try {
         await cb();
       } catch {
-        // Listener failures do not turn a committed rotation into a failed
-        // server operation. Consumers remain responsible for fail-closed UI.
       }
     }));
     return result;
@@ -106,9 +84,6 @@ export function coordinateRotation(
   return promise;
 }
 
-// Mint a fresh subkey cert + POST it + persist the new session row.
-// Pure: no class state, no dedup. Wrap in `coordinateRotation` for
-// dedup + listener semantics.
 export async function mintAndPostSubkey(opts: {
   identity: StoredIdentity;
   crypto: CryptoOps;
@@ -170,13 +145,9 @@ export async function mintAndPostSubkey(opts: {
   return cert;
 }
 
-// 250/750/1500 ms ≈ 2.5 s worst case — within typical Postgres
-// commit-visibility windows and under what a user notices as a hang.
 export const ROTATE_SUBKEY_RETRY_DELAYS_MS = [0, 250, 750, 1500] as const;
 export const SUBKEY_READINESS_RETRY_DELAYS_MS = [0, 250, 750, 1500, 2500] as const;
 
-// 401 or 400 with exact DEVICE_NOT_FOUND body. Any other 400 is a
-// real malformed request and must NOT be retried.
 export function isRotationRaceError(e: unknown): boolean {
   if (!(e instanceof HttpError)) return false;
   if (e.status === 401) return true;
@@ -189,7 +160,6 @@ export function isRotationRaceError(e: unknown): boolean {
   }
 }
 
-// Tests pass an all-zero `delays` array to skip sleeps.
 export async function retryOnRotationRace<T>(
   fn: () => Promise<T>,
   delays: readonly number[] = ROTATE_SUBKEY_RETRY_DELAYS_MS,

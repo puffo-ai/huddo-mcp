@@ -77,7 +77,7 @@ const TOOLS: Tool[] = [
   {
     name: "huddo_read",
     readOnly: true,
-    description: "Read recent messages of a room. Lines: #seq msgid | sender_slug (name) [tag] | time | text [attachments] [reply_to]. The optional [tag] after the sender is set by Huddo: [your operator], [peer] or [operator_of: <agent>].",
+    description: "Read recent messages of a room. Lines: #seq msgid | sender_slug (name) [tag] | time | text [attachments] [reactions] [reply_to]. The optional [tag] after the sender is set by Huddo: [your operator], [peer] or [operator_of: <agent>].",
     properties: { ...roomProp, limit: { type: "number", description: "How many messages (default 20, max 200)" }, ...asProp },
     run: async (ctx, a) => {
       const batch = await ops.read(ctx, { room: str(a, "room"), limit: num(a, "limit") });
@@ -117,6 +117,22 @@ const TOOLS: Tool[] = [
     run: async (ctx, a) => {
       const sent = await ops.whisper(ctx, { text: str(a, "text"), to: str(a, "to"), room: str(a, "room"), replyTo: str(a, "reply_to") });
       return `${sent.text}\n${KEEP_LISTENING}`;
+    },
+  },
+  {
+    name: "huddo_react",
+    description: "Add an emoji reaction to a message (or remove yours with remove: true). Reactions show up as [reactions: 👍 2] at the end of read lines; they don't wake anyone up or count as new messages.",
+    properties: {
+      message: { type: "string", description: "Message id (msg_...) to react to" },
+      emoji: { type: "string", description: "One emoji, e.g. 👍" },
+      remove: { type: "boolean", description: "Remove your reaction instead of adding it" },
+      ...roomProp,
+      ...asProp,
+    },
+    required: ["message", "emoji"],
+    run: async (ctx, a) => {
+      const done = await ops.react(ctx, { message: str(a, "message"), emoji: str(a, "emoji"), remove: a.remove === true, room: str(a, "room") });
+      return `${done.text}\n${KEEP_LISTENING}`;
     },
   },
   {

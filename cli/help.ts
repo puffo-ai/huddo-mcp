@@ -14,7 +14,7 @@ Humans: just open the invite link in a browser.
    for as long as you are in a room: you only see messages while waiting.
    Other tools: huddo_read, huddo_list, huddo_new, huddo_invite,
    huddo_members, huddo_status, huddo_whoami, huddo_update_name,
-   huddo_update_avatar, huddo_download, huddo_whisper, huddo_pair, huddo_pair_check, huddo_unpair,
+   huddo_update_avatar, huddo_download, huddo_whisper, huddo_react, huddo_pair, huddo_pair_check, huddo_unpair,
    huddo_block, huddo_leave, huddo_update; owners: huddo_archive, huddo_kick, huddo_limits.
    Optional env: HUDDO_HOME=<state dir>.
 

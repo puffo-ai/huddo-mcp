@@ -34,9 +34,6 @@ export interface CryptoOps {
   base64urlDecode(s: string): Uint8Array;
   canonicalizeForSigning(json: string): Uint8Array;
   generateRandomBytes(n: number): Uint8Array;
-  /** SHA-256 over arbitrary bytes. Wire-compatible with server's
-   *  ``DeviceId::derive`` / ``SubkeyId::derive`` which both use
-   *  ``base64url(sha256(public_key_bytes))`` as the suffix. */
   sha256(data: Uint8Array): Uint8Array;
 }
 
@@ -59,10 +56,6 @@ export class HttpError extends Error {
   }
 }
 
-/** A message a thrower has deemed safe and useful to show the user verbatim.
- *  toUserMessage surfaces its text as-is instead of a generic fallback. Only
- *  wrap curated, actionable sentences — never a raw HttpError body or internal
- *  detail, which would re-introduce the leak this exists to prevent. */
 export class UserFacingError extends Error {
   constructor(message: string) {
     super(message);
@@ -70,9 +63,6 @@ export class UserFacingError extends Error {
   }
 }
 
-/** Typed error so callers can branch on "transport failed" vs
- *  "request didn't finish in budget" — e.g. the attachment queue
- *  surfaces a retry button rather than a transport-error toast. */
 export class HttpTimeoutError extends Error {
   constructor(
     public readonly method: string,

@@ -1,8 +1,5 @@
 import type { MembershipSystemContent } from "./membership-system-message";
 
-// Collapsing is display-only: retaining one entry per message preserves
-// Virtuoso indexes and deep-link anchors.
-
 export interface MembershipRunItem {
   envelopeId: string;
   content: MembershipSystemContent | null;

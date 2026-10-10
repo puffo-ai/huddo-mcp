@@ -1,6 +1,3 @@
-// Mirrors core-v2's ``service::domain::aad`` byte-layout — must match
-// byte-for-byte or HPKE / AEAD fail with no useful error.
-
 export const MESSAGE_HPKE_INFO = new TextEncoder().encode(
   "puffo/msg-hpke/v1",
 );
@@ -42,13 +39,13 @@ function lenPrefixedUtf8(value: string): Uint8Array {
     throw new Error("len_prefixed_utf8: value too long");
   }
   const lenBuf = new Uint8Array(2);
-  new DataView(lenBuf.buffer).setUint16(0, bytes.length, false /* big-endian */);
+  new DataView(lenBuf.buffer).setUint16(0, bytes.length, false );
   return concat([lenBuf, bytes]);
 }
 
 function i64BeFromU64(value: number): Uint8Array {
   const buf = new Uint8Array(8);
-  new DataView(buf.buffer).setBigInt64(0, BigInt(value), false /* big-endian */);
+  new DataView(buf.buffer).setBigInt64(0, BigInt(value), false );
   return buf;
 }
 

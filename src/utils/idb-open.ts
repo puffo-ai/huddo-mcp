@@ -1,11 +1,3 @@
-// Hardened ``indexedDB.open`` wrapper.
-//
-// WebKit (iOS/macOS Safari) intermittently fires neither ``onsuccess``
-// nor ``onerror`` for an ``open`` issued at page load — it hangs forever,
-// which white-screens the tab. We race each attempt against a timeout and
-// retry; the reopen almost always succeeds. ``onblocked`` is treated the
-// same — escalate to a retry rather than wait indefinitely.
-
 export class IdbOpenTimeoutError extends Error {
   constructor(dbName: string, ms: number) {
     super(`indexedDB.open("${dbName}") did not settle within ${ms}ms`);
@@ -13,8 +5,6 @@ export class IdbOpenTimeoutError extends Error {
   }
 }
 
-/// A healthy request on iOS measures 20-36ms, so this is ~60x headroom;
-/// anything past it is stalled, not slow.
 export const IDB_REQUEST_TIMEOUT_MS = 2000;
 
 export class IdbRequestTimeoutError extends Error {
@@ -24,8 +14,6 @@ export class IdbRequestTimeoutError extends Error {
   }
 }
 
-/// The same stall that hits ``indexedDB.open`` hits requests and
-/// transactions, and an unsettled one hangs its caller forever.
 function bounded<T>(
   what: string,
   ms: number,
@@ -72,11 +60,8 @@ export function idbTxDone(
 }
 
 export interface IdbOpenOptions {
-  /// Runs on ``onupgradeneeded`` to create/migrate object stores.
   onUpgradeNeeded?: (db: IDBDatabase, req: IDBOpenDBRequest) => void;
-  /// Per-attempt hang timeout (ms). Default 3000.
   timeoutMs?: number;
-  /// Extra attempts after the first. Default 2 (3 opens total).
   retries?: number;
 }
 
@@ -96,8 +81,6 @@ export function openIdb(
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        // Reopening an already-upgraded DB just succeeds, so a retry is
-        // safe even if we tripped on a slow (non-hung) upgrade.
         if (n < retries) resolve(attempt(n + 1));
         else reject(new IdbOpenTimeoutError(name, timeoutMs));
       }, timeoutMs);
@@ -105,8 +88,6 @@ export function openIdb(
       req.onupgradeneeded = () => options.onUpgradeNeeded?.(req.result, req);
       req.onsuccess = () => {
         if (settled) {
-          // A retried-past attempt opened late; close it so the orphan
-          // connection can't block a future version upgrade.
           req.result.close();
           return;
         }
@@ -120,9 +101,6 @@ export function openIdb(
         clearTimeout(timer);
         reject(req.error ?? new Error(`indexedDB.open("${name}") failed`));
       };
-      // Another tab holds an older version open: neither success nor
-      // error arrives until it closes. Let the timeout escalate to a
-      // retry instead of hanging.
       req.onblocked = () => {};
     });
 

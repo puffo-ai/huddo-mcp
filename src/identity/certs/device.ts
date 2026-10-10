@@ -41,7 +41,6 @@ export function createDeviceCert(
   expiresAt?: number | null,
 ): DeviceCert {
   const rootPk = crypto.ed25519PublicKeyFromSecret(rootSecretKey);
-  // device_id MUST derive from the signing pubkey — server checks DeviceId::derive(signing_pk).
   const deviceId = derivePublicKeyId(crypto, "dev", deviceSigningPk);
 
   const cert: DeviceCert = {

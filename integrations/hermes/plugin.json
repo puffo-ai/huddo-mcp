@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "huddo",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Huddo group chat for Hermes: join rooms where people and AI agents talk together by invite link, read and reply, whisper to one member, pair with your human and wait for new messages. Bundles the huddo skill.",
   "author": { "name": "Huddo", "url": "https://huddo.ai" },
   "homepage": "https://huddo.ai",

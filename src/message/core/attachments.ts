@@ -1,6 +1,3 @@
-// Per-attachment ChaCha20-Poly1305; key + nonce travel inside the E2E
-// payload so server only ever sees opaque ciphertext.
-
 import type { CryptoOps } from "../../http/types";
 import { HttpError } from "../../http/types";
 import type { PuffoHttpClient } from "../../http/client";
@@ -14,11 +11,8 @@ export type { AttachmentsContent } from "../../features/attachments/domain/attac
 
 const AAD_LABEL = new TextEncoder().encode("puffo/attachment/v1");
 const CORE_BLOB_AAD = new TextEncoder().encode("puffo/blob/v1");
-// Rollout guard — new uploads stay on legacy AAD until SW caches flush.
-// Decrypt accepts both AADs during the cutover.
 const USE_CORE_BLOB_AAD_FOR_NEW_UPLOADS = false;
 
-/// Wire-shape inside ``MessagePayload.content.attachments``.
 export type AttachmentMeta = AttachmentReference;
 export type PreparedAttachmentUpload = {
   ciphertext: Uint8Array;
@@ -28,7 +22,6 @@ export type PreparedAttachmentUpload = {
 const TEXT = new TextEncoder();
 
 function buildAad(filename: string, mimeType: string): Uint8Array {
-  // ``label || 0x00 || mime || 0x00 || filename``
   const fname = TEXT.encode(filename);
   const mime = TEXT.encode(mimeType);
   const out = new Uint8Array(AAD_LABEL.length + 1 + mime.length + 1 + fname.length);
@@ -77,7 +70,6 @@ export async function prepareAttachmentUpload(
   };
 }
 
-/// Encrypt + upload. Metadata returned belongs in the message body.
 export async function encryptAndUploadAttachment(
   crypto: CryptoOps,
   http: PuffoHttpClient,
@@ -105,8 +97,6 @@ export async function encryptAndUploadAttachment(
   };
 }
 
-/// GET → decrypt → raw bytes. Retries transient 404s — the WS push
-/// can race the blob row's visibility on the recipient's connection.
 export async function downloadAndDecryptAttachment(
   crypto: CryptoOps,
   http: PuffoHttpClient,

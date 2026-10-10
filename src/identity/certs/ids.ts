@@ -1,7 +1,5 @@
 import type { CryptoOps } from "../../http/types";
 
-// Server's DeviceId::derive / SubkeyId::derive recompute this suffix,
-// so the SHA-256 source MUST be the bound public key.
 export function derivePublicKeyId(
   crypto: CryptoOps,
   prefix: "dev" | "sk",
@@ -13,8 +11,6 @@ export function derivePublicKeyId(
 
 const ROOT_PK_FP_DOMAIN = "puffo/root-public-key-fingerprint/v1";
 
-// Field order must match server's PublicKeyFingerprint::derive_ed25519_public_key_bytes:
-//   sha256(domain || 0x00 || "ed25519" || 0x00 || rootPublicKey)
 export function deriveRootPublicKeyFingerprint(
   crypto: CryptoOps,
   rootPublicKey: Uint8Array,

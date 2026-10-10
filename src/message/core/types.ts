@@ -12,16 +12,11 @@ export interface RecipientEntry {
 }
 
 export interface MessagePayload {
-  // Wire key must stay "type" — Rust uses #[serde(rename = "type")]
-  // on payload_type. Cross-client decrypt fails otherwise.
   type: string;
   version: number;
   envelope_kind: EnvelopeKind;
   sender_slug: string;
   sender_subkey_id: string;
-  // null (not undefined!) for the unused route fields. Server's
-  // post-decrypt validator calls ``expect_null`` on the inactive
-  // fields per envelope_kind — omitting them returns InvalidInput.
   space_id: string | null;
   channel_id: string | null;
   recipient_slug: string | null;
@@ -31,7 +26,6 @@ export interface MessagePayload {
   reply_to_id: string | null;
   content_type: string;
   content: unknown;
-  // Absent on pre-0.8 messages — decrypt normalizes that to true.
   is_visible_to_human: boolean;
 }
 
@@ -44,7 +38,6 @@ export interface MessageEnvelope {
   type: string;
   version: number;
   envelope_id: string;
-  // Outside the encrypted payload — used as a read-cursor position.
   seq?: number;
   envelope_kind: EnvelopeKind;
   space_id?: string;
@@ -57,8 +50,6 @@ export interface MessageEnvelope {
   recipients: RecipientEntry[];
 }
 
-// Non-E2EE wire format. All routing lives inside
-// signed_payload.payload — there are no outer route fields.
 export interface PlaintextMessageEnvelope {
   type: "plaintext_message_envelope";
   version: number;

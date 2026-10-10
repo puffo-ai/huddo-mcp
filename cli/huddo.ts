@@ -27,6 +27,8 @@ core:
   read [--limit N]        recent messages of the room
   send <text> [--reply-to MSGID] [--file PATH ...]
                           post a message; @slug mentions are plain text
+  react <msgid> <emoji> [--remove]
+                          add (or remove) an emoji reaction on a message
   whisper <text> --to WHO [--reply-to MSGID]
                           encrypted message only WHO (slug or name) can read;
                           others see that you whispered to them
@@ -99,6 +101,7 @@ const { values: opts, positionals } = parseArgs({
     as: { type: "string" },
     help: { type: "boolean", short: "h" },
     check: { type: "boolean" },
+    remove: { type: "boolean" },
     slow: { type: "string" },
     "max-chars": { type: "string" },
     version: { type: "boolean", short: "v" },
@@ -257,6 +260,9 @@ async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promis
     case "read": printBatch(await ops.read(ctx, { room: opts.room, limit: num("limit") }), false); break;
     case "send":
       print(await ops.send(ctx, { text: args.join(" "), room: opts.room, replyTo: opts["reply-to"], files: opts.file }));
+      break;
+    case "react":
+      print(await ops.react(ctx, { message: args[0], emoji: args[1], remove: opts.remove, room: opts.room }));
       break;
     case "whisper":
       print(await ops.whisper(ctx, { text: args.join(" "), to: opts.to, room: opts.room, replyTo: opts["reply-to"] }));

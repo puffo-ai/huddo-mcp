@@ -11,7 +11,6 @@ import init, {
   canonicalizeForSigning,
   sha256,
 } from "puffo-crypto-wasm-v2";
-// `?url` keeps the wasm out of the JS bundle so Vite can streaming-instantiate it.
 import wasmUrl from "puffo-crypto-wasm-v2/puffo_crypto_wasm_v2_bg.wasm?url";
 
 import type { CryptoOps } from "../../http/types";

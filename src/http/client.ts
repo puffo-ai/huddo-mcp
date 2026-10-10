@@ -18,18 +18,12 @@ import {
 import { findAccountKeyAuthority } from "../application/runtime/account-key-authority-registry";
 import { loadLegacyIdentity, loadLegacySession } from "../application/runtime/legacy-secret-read-adapter";
 
-// Hard timeouts on every signed request so a stalled fetch can't
-// wedge the caller forever. 60s covers every JSON endpoint we send
-// today; uploads get 5 minutes because encrypted attachment bodies
-// can reach 8 MiB and slow networks still need a user-tolerable
-// window. Per-request overrides via opts.timeoutMs.
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 export const DEFAULT_UPLOAD_TIMEOUT_MS = 5 * 60_000;
 export const UNAUTHORIZED_REQUEST_RETRY_DELAYS_MS = [0, 150, 350] as const;
 export const SESSION_RECOVERY_TIMEOUT_MS = 10_000;
 
 export class PuffoHttpClient {
-  // Re-export for back-compat with existing WS subscribers.
   static onSubkeyRotated = onSubkeyRotated;
 
   private serverUrl: string;
@@ -109,11 +103,6 @@ export class PuffoHttpClient {
     return this.request<T>("POST", path, raw);
   }
 
-  /// Signed POST with a raw-bytes body. Used by /blobs/upload, where
-  /// the server reads the request body directly into a file (no JSON
-  /// envelope). The signature still covers the body bytes verbatim.
-  /// Defaults to the upload-timeout budget rather than the normal
-  /// request budget; pass ``opts.timeoutMs`` to override.
   async postBytes<T = unknown>(
     path: string,
     bytes: Uint8Array,
@@ -154,11 +143,6 @@ export class PuffoHttpClient {
     return this.handleResponse<T>(resp);
   }
 
-  /// Signed GET that returns raw bytes — used by /blobs/{id} where
-  /// the body is opaque (encrypted attachments) or an image. Browsers
-  /// can't carry signed headers on ``<img src=...>``, so the caller
-  /// is expected to wrap the result in ``URL.createObjectURL`` and
-  /// hand THAT back to the img tag.
   async getBytes(path: string, opts?: { timeoutMs?: number }): Promise<Uint8Array> {
     await this.ensureSubkey();
     const resp = await this.requestWithSessionRecovery(
@@ -303,8 +287,6 @@ export class PuffoHttpClient {
         signal: ctrl.signal,
       });
     } catch (err) {
-      // fetch rejects with AbortError when the signal fires — translate
-      // to the typed timeout so callers can branch on it.
       if (ctrl.signal.aborted) {
         throw new HttpTimeoutError(method, path, timeoutMs);
       }
@@ -327,11 +309,6 @@ export class PuffoHttpClient {
       await this.rotateSubkeyWithRetry(this.assertSessionCurrent.bind(this));
       return;
     }
-    // Belt-and-suspenders against stale sessions left behind by an
-    // identity rotation. saveIdentity clears the session when
-    // device_id changes (keystore.ts), but a session row written by an
-    // older client build can still slip past here. Without this check
-    // the request signs under the old device's subkey.
     const identity = owner ? null : await loadLegacyIdentity(this.keyStore, this.slug);
     this.assertSessionCurrent();
     if (identity && session.device_id !== identity.device_id) {
@@ -339,13 +316,10 @@ export class PuffoHttpClient {
     }
   }
 
-  /** Ensure the persisted account subkey is usable before runtime hydration. */
   async ensureAccountSubkey(): Promise<void> {
     await this.ensureSubkey();
   }
 
-  /// Post-enroll rotation: retries 401 + 400 DEVICE_NOT_FOUND while
-  /// the just-committed device_cert / subkey_cert propagate.
   async rotateSubkeyWithRetry(assertCurrent?: () => void): Promise<Record<string, unknown>> {
     return trackSubkeyRotationTransaction(async () => {
       const assertOwner = assertCurrent ?? this.assertSessionCurrent.bind(this);
@@ -404,9 +378,6 @@ export class PuffoHttpClient {
   }
 }
 
-// Re-export rotation helpers from their new home so existing callers
-// (agent provision flows) don't need an import-path bump in the same
-// PR. New code should import directly from identity/session/rotation.
 export {
   ROTATE_SUBKEY_RETRY_DELAYS_MS,
   SUBKEY_READINESS_RETRY_DELAYS_MS,

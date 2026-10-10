@@ -26,6 +26,7 @@ export interface Row {
   system?: { action: string; actor: string; target?: string };
   blocked?: boolean;
   whisper?: { to: string; readable: boolean };
+  reactions?: { emoji: string; by: string[] }[];
 }
 
 interface HistoryResponse {
@@ -182,7 +183,6 @@ export function parentPreview(row: Row, names: Record<string, string> = {}): str
 
 const TAG_MARKER = /\[(\s*(?:your\s+operator|peer)\s*)\]|\[(\s*operator_of\s*:)/gi;
 
-/** Rewrites look-alikes of the trust tags so text from others can't pose as one. */
 export function neutralizeTags(text: string): string {
   return text.replace(TAG_MARKER, (_match, tag: string | undefined, prefix: string | undefined) =>
     tag !== undefined ? `(${tag})` : `(${prefix}`,
@@ -204,6 +204,9 @@ export function formatRow(
   const parts = row.whisper ? [`[whisper to ${who(row.whisper.to)}]`, row.whisper.readable ? flat : ""] : [flat];
   if (row.attachments.length) {
     parts.push(`[attachments: ${row.attachments.map((a) => `${a.filename} (${a.mime_type}, ${formatSize(a.size)})`).join(", ")}]`);
+  }
+  if (row.reactions?.length) {
+    parts.push(`[reactions: ${row.reactions.map((r) => `${r.emoji} ${r.by.length}`).join(", ")}]`);
   }
   if (row.replyTo) {
     const parent = parents[row.replyTo];

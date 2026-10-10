@@ -8,7 +8,6 @@ export interface StoredIdentity {
   slug_binding_json?: string;
   identity_cert_json?: string;
   identity_profile_json?: string;
-  /** Set on email-auth identities so the key-login picker can render email instead of slug. */
   email?: string;
 }
 
@@ -38,14 +37,11 @@ export type IdentityDeletionReason =
 
 function recordIdentityDeletion(reason: IdentityDeletionReason): void {
   try {
-    // Keep enough information to diagnose unexpected deletion paths without
-    // retaining a user's handle on a shared browser.
     localStorage.setItem(IDENTITY_DELETION_AUDIT_KEY, JSON.stringify({
       at: new Date().toISOString(),
       reason,
     }));
   } catch {
-    // Diagnostics must never prevent an explicitly requested deletion.
   }
 }
 
@@ -72,8 +68,6 @@ interface StoredIdentityRecord {
 
 interface StoredSessionRecord {
   slug: string;
-  // Persisted so loadSession stays a single IDB read; optional for legacy rows
-  // written before this field existed (upgraded on next saveSession).
   device_id?: string;
   subkey_id: string;
   subkey_secret_key: EncryptedBlob;
@@ -100,10 +94,6 @@ export class BrowserKeyStore {
     const db = this.requireDB();
     const key = this.requireWrappingKey();
 
-    // When device_id or server scope changes (re-enrollment / restore /
-    // recovery reset / authenticated origin rebind), invalidate the stored
-    // subkey session: it is bound to the OLD scope and must not be paired
-    // with the updated identity even if the page dies before rotation.
     const prevRecord: StoredIdentityRecord | undefined = await reqResult(
       db
         .transaction(IDENTITY_STORE, "readonly")
@@ -131,8 +121,6 @@ export class BrowserKeyStore {
       email: identity.email,
     };
 
-    // Atomic put + (conditional) session delete — page dying mid-rotation
-    // must not leave a new identity row paired with a stale session row.
     const stores = deviceIdChanged || serverUrlChanged
       ? [IDENTITY_STORE, SESSION_STORE]
       : [IDENTITY_STORE];
@@ -241,7 +229,6 @@ export class BrowserKeyStore {
       return null;
     }
 
-    // Legacy rows (no device_id on session) fall back to the identity record.
     let deviceId = record.device_id;
     if (!deviceId) {
       const identity = await this.loadIdentity(slug);
@@ -278,7 +265,6 @@ export class BrowserKeyStore {
     try {
       localStorage.removeItem(IDENTITY_DELETION_AUDIT_KEY);
     } catch {
-      // Clearing durable credentials must not depend on diagnostics storage.
     }
     this.wrappingKey = await this.ensureWrappingKey();
   }
@@ -360,15 +346,12 @@ export class BrowserKeyStore {
   private async requestPersistence(): Promise<void> {
     try {
       if (navigator?.storage?.persist) {
-        // Bounded: iOS has been seen to leave this pending, and it is
-        // advisory — booting without it beats not booting.
         await Promise.race([
           navigator.storage.persist(),
           new Promise((r) => setTimeout(r, IDB_REQUEST_TIMEOUT_MS)),
         ]);
       }
     } catch {
-      // persist() not available — non-critical
     }
   }
 }

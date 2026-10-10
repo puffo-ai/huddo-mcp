@@ -131,8 +131,6 @@ export async function createRustSpacesMembershipCommandPort(
           throw new SpacesMembershipStaleOwnerError();
         }
         if (!owner) {
-          // Pre-bind surfaces (onboarding, invite landing) have no projection
-          // owner yet; post like the TypeScript authority would.
           return await postSpaceEvents(
             http,
             spaceId,

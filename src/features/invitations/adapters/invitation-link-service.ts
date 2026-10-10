@@ -58,7 +58,6 @@ export async function createInviteLink(
     scope: params.scope,
     max_uses: params.maxUses,
     expires_at: params.expiresAt,
-    // VESTIGIAL(PUF-358): required server column.
     invite_public_key: material.publicKeyBase64url,
     created_at: Date.now(),
     nonce: generateEventNonce(crypto),

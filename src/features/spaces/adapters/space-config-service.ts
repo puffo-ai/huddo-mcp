@@ -1,17 +1,14 @@
 import type { PuffoHttpClient } from "../../../http/client";
 
-// The server rejects an empty patch.
 export interface UpdateSpacePatch {
   name?: string;
   description?: string;
-  // The server uses an empty string to clear the existing avatar.
   avatar_url?: string;
 }
 
 export interface UpdateChannelPatch {
   name?: string;
   description?: string;
-  /** Set-only: a channel can switch formats but cannot return to unset. */
   is_encrypted?: boolean;
 }
 
@@ -61,7 +58,6 @@ export async function getMemberSettings(
   http: PuffoHttpClient,
   spaceId: string,
 ): Promise<MemberSettingsResponse> {
-  // The server returns 404 when the caller is not an active space member.
   return http.get<MemberSettingsResponse>(
     `/spaces/${encodeURIComponent(spaceId)}/members/me/settings`,
   );
@@ -72,8 +68,6 @@ export async function patchMemberSettings(
   spaceId: string,
   patch: MemberSettingsPatch,
 ): Promise<MemberSettingsResponse> {
-  // Agents cannot enable auto_accept_member_invite (403); successful changes
-  // also arrive over space_member_settings_update for other devices.
   return http.patch<MemberSettingsResponse>(
     `/spaces/${encodeURIComponent(spaceId)}/members/me/settings`,
     patch as unknown as Record<string, unknown>,

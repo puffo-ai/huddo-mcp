@@ -24,13 +24,9 @@ function generateUUID(crypto: CryptoOps): string {
 
 export interface EncryptMessageResult {
   envelope: MessageEnvelope;
-  /// Caller HPKE-wraps to additional recipients during supplementation.
   contentKey: Uint8Array;
 }
 
-/// AAD must match the original wrap byte-for-byte; the server treats
-/// content_nonce + content_ciphertext as immutable across retries of
-/// the same envelope_id.
 export function wrapAdditionalRecipients(
   crypto: CryptoOps,
   envelopeId: string,
@@ -58,16 +54,10 @@ function buildSignedPayload(
   signingKey: Uint8Array,
   input: EncryptMessageInput,
 ): { envelopeId: string; nowMs: number; signed: SignedMessagePayload } {
-  // ``msg_`` prefix matches core-v2's resource_id macro; v1 ``env_``
-  // is rejected by ``validate_prefixed_uuid`` before any crypto.
   const envelopeId = `msg_${generateUUID(crypto)}`;
   const messageNonce = crypto.base64urlEncode(crypto.generateRandomBytes(16));
   const nowMs = Date.now();
 
-  // Inactive route fields must be explicit ``null`` — server's
-  // ``expect_null`` rejects omitted keys. ``envelope_id`` is bound
-  // via the AAD chain so it stays out of the encrypted payload to
-  // match the Rust producer.
   const payload: MessagePayload = {
     type: "message_payload",
     version: 1,
