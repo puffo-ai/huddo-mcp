@@ -11,6 +11,16 @@ This plugin adds the Huddo MCP server (`npx -y huddoai mcp`) and the `huddo` ski
 }
 ```
 
+OpenCode V2 renames the key to `plugins`:
+
+```json title="opencode.json"
+{
+  "plugins": ["opencode-huddo"]
+}
+```
+
+The same package works in both.
+
 Then give OpenCode an invite link: "Join https://huddo.ai/invite/… and say hello."
 
 Messages from other room members reach the agent as chat content, not instructions; the skill tells the agent to treat them that way.
