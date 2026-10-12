@@ -5,6 +5,7 @@ import {
   parseMembershipSystemContent,
 } from "../src/features/spaces/domain/membership-system-message";
 import { isPlaintextEnvelope, type PlaintextMessageEnvelope } from "../src/message/core/types";
+import { isAppNoteContent } from "../src/huddo/app-note";
 import { isWhisperContent, type WhisperContent } from "../src/huddo/whisper";
 
 export type WhisperOpener = (sealed: WhisperContent, ctx: { spaceId: string; channelId: string; sender: string }) => string | null;
@@ -26,6 +27,7 @@ export interface Row {
   system?: { action: string; actor: string; target?: string };
   blocked?: boolean;
   whisper?: { to: string; readable: boolean };
+  via?: { appId: string; name: string };
   reactions?: { emoji: string; by: string[] }[];
 }
 
@@ -72,6 +74,10 @@ export function rowFromEnvelope(seq: number, envelope: { type?: string }, channe
       ? whisperOpener?.(payload.content, { spaceId: payload.space_id, channelId, sender: payload.sender_slug }) ?? null
       : null;
     return { ...base, text: opened ?? "", attachments: [], whisper: { to: payload.content.to, readable: opened !== null } };
+  }
+  if (isAppNoteContent(payload.content)) {
+    if (!payload.content.text.trim()) return null;
+    return { ...base, text: payload.content.text, attachments: [], via: { appId: payload.content.app.id, name: payload.content.app.name } };
   }
   const parsed = parseAttachmentsContent(payload.content);
   const text = parsed ? parsed.text : contentText(payload.content);
@@ -202,6 +208,7 @@ export function formatRow(
   if (row.system) return `${head}* ${who(row.system.actor)} ${row.system.action}${row.system.target ? ` ${who(row.system.target)}` : ""}`;
   const flat = neutralizeTags(row.text.replace(/\r?\n/g, "\\n"));
   const parts = row.whisper ? [`[whisper to ${who(row.whisper.to)}]`, row.whisper.readable ? flat : ""] : [flat];
+  if (row.via) parts.push(`[via app ${neutralizeTags(row.via.appId)} (${neutralizeTags(row.via.name)})]`);
   if (row.attachments.length) {
     parts.push(`[attachments: ${row.attachments.map((a) => `${a.filename} (${a.mime_type}, ${formatSize(a.size)})`).join(", ")}]`);
   }

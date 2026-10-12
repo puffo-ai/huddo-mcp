@@ -19,6 +19,17 @@ import { buildPlaintextMessage } from "../src/message/core/encrypt";
 import { fetchRecipientDevices } from "../src/message/recipients";
 import { sealWhisper, WHISPER_CONTENT_TYPE } from "../src/huddo/whisper";
 import { REACTION_CONTENT_TYPE, fetchReactionSnapshot, reactionChips, reactionContent } from "../src/huddo/reactions";
+import {
+  deleteApp,
+  getAppState,
+  listApps,
+  newRequestId,
+  publishApp,
+  submitOps,
+  toAppError,
+  updateAppSettings,
+  type PatchOp,
+} from "../src/huddo/room-apps";
 import { postMessageEnvelope } from "../src/message";
 import {
   ATTACHMENT_CONTENT_TYPE,
@@ -865,6 +876,179 @@ export async function react(ctx: Ctx, opts: { message?: string; emoji?: string; 
     json: { id: envelope.envelope_id, seq: posted.seq ?? null, spaceId: room.spaceId, channelId: room.channelId, room: room.name, message, emoji, removed: Boolean(opts.remove) },
     text: `${opts.remove ? "removed" : "reacted"} ${emoji} ${opts.remove ? "from" : "to"} ${message} in "${room.name}" (${room.spaceId})`,
   };
+}
+
+function appFail(err: unknown): never {
+  const e = toAppError(err);
+  throw new UserError(`${e.code}: ${e.message}`);
+}
+
+function parseOnOff(flag: string, value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (value === "on") return true;
+  if (value === "off") return false;
+  throw new UserError(`${flag} must be on or off`);
+}
+
+function parseWrite(value: string | undefined): "members" | "owner" | undefined {
+  if (value === undefined) return undefined;
+  if (value !== "members" && value !== "owner") throw new UserError("--write must be members or owner");
+  return value;
+}
+
+function readJsonArg(raw: string, what: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new UserError(`${what} is not valid JSON`);
+  }
+}
+
+export async function publish(
+  ctx: Ctx,
+  opts: {
+    app?: string;
+    file?: string;
+    name?: string;
+    description?: string;
+    guide?: string;
+    guideFile?: string;
+    stateFile?: string;
+    schema?: string;
+    writeAccess?: string;
+    banner?: string;
+    enabled?: boolean;
+    reset?: boolean;
+    room?: string;
+  },
+) {
+  const appId = opts.app?.trim() ?? "";
+  if (!appId) throw new UserError("app publish needs an app id, e.g. tasks");
+  if (!opts.file) throw new UserError("app publish needs --file app.html (one self-contained HTML file)");
+  const schema = Number(opts.schema ?? "1");
+  if (!Number.isInteger(schema) || schema < 1) throw new UserError("--schema must be a whole number from 1");
+  const decode = (path: string) => new TextDecoder().decode(readFileArg(path));
+  const guide = opts.guideFile ? decode(opts.guideFile) : opts.guide;
+  const initial = opts.stateFile ? readJsonArg(decode(opts.stateFile), "--state-file") : undefined;
+  if (initial !== undefined && (!initial || typeof initial !== "object" || Array.isArray(initial))) throw new UserError("--state-file must hold a JSON object");
+  const writeAccess = parseWrite(opts.writeAccess);
+  const banner = parseOnOff("--banner", opts.banner);
+  const acct = account(ctx);
+  const room = await currentRoom(acct, opts.room);
+  try {
+    const meta = await publishApp(acct.http, room.spaceId, appId, {
+      name: opts.name ?? appId,
+      schema_version: schema,
+      code: decode(opts.file),
+      ...(opts.description !== undefined ? { description: opts.description } : {}),
+      ...(guide !== undefined ? { guide } : {}),
+      ...(initial !== undefined ? { initial_state: initial as Record<string, unknown> } : {}),
+      ...(writeAccess ? { write_access: writeAccess } : {}),
+      ...(banner !== undefined ? { banner } : {}),
+      ...(opts.enabled !== undefined ? { enabled: opts.enabled } : {}),
+      ...(opts.reset ? { reset_state: true } : {}),
+    });
+    return {
+      json: { spaceId: room.spaceId, ...meta },
+      text: `published ${meta.app_id} v${meta.version} (schema ${meta.schema_version}, revision ${meta.revision}, ${meta.enabled ? "on" : "off"}${meta.banner ? ", banner" : ""}) in "${room.name}"`,
+    };
+  } catch (err) {
+    appFail(err);
+  }
+}
+
+export async function apps(ctx: Ctx, opts: { app?: string; room?: string }) {
+  const acct = account(ctx);
+  const room = await currentRoom(acct, opts.room);
+  try {
+    if (opts.app) {
+      const [snap, list] = await Promise.all([getAppState(acct.http, room.spaceId, opts.app), listApps(acct.http, room.spaceId)]);
+      const meta = list.find((a) => a.app_id === opts.app);
+      const head = meta
+        ? `${meta.name} (${meta.app_id}) v${snap.version} schema ${snap.schema_version} revision ${snap.revision}${meta.description ? `\n${meta.description}` : ""}`
+        : `${opts.app} revision ${snap.revision}`;
+      const guide = meta?.guide ? `\n\nguide:\n${meta.guide}` : "";
+      return {
+        json: { spaceId: room.spaceId, ...snap, name: meta?.name ?? null, description: meta?.description ?? "", guide: meta?.guide ?? "" },
+        text: `${head}${guide}\n\nstate:\n${JSON.stringify(snap.state, null, 2)}`,
+      };
+    }
+    const list = await listApps(acct.http, room.spaceId);
+    return {
+      json: { spaceId: room.spaceId, apps: list },
+      text: list.length
+        ? list
+            .map((a) => `${a.app_id}  ${a.name}  v${a.version}  revision ${a.revision}  ${a.enabled ? "on" : "off"}${a.banner ? "  banner" : ""}  write: ${a.write_access}${a.description ? `\n    ${a.description}` : ""}`)
+            .join("\n")
+        : `"${room.name}" has no apps`,
+    };
+  } catch (err) {
+    appFail(err);
+  }
+}
+
+export async function appSubmit(ctx: Ctx, opts: { app?: string; ops?: string; expect?: string; requestId?: string; room?: string }) {
+  const appId = opts.app?.trim() ?? "";
+  if (!appId) throw new UserError("app submit needs an app id");
+  if (!opts.ops) throw new UserError("app submit needs --ops '<JSON Patch array>'");
+  const ops = readJsonArg(opts.ops, "--ops");
+  if (!Array.isArray(ops) || ops.length === 0) throw new UserError("--ops must be a non-empty JSON array of patch operations");
+  const expected = opts.expect === undefined ? undefined : Number(opts.expect);
+  if (expected !== undefined && !Number.isInteger(expected)) throw new UserError("--expect must be a revision number");
+  const acct = account(ctx);
+  const room = await currentRoom(acct, opts.room);
+  try {
+    const snap = await getAppState(acct.http, room.spaceId, appId);
+    const out = await submitOps(acct.http, room.spaceId, appId, {
+      request_id: opts.requestId ?? newRequestId(),
+      schema_version: snap.schema_version,
+      app_version: snap.version,
+      ...(expected !== undefined ? { expected_revision: expected } : {}),
+      ops: ops as PatchOp[],
+    });
+    return {
+      json: { spaceId: room.spaceId, app_id: appId, ...out },
+      text: `${out.replayed ? "already applied" : "applied"} ${ops.length} op${ops.length === 1 ? "" : "s"} to ${appId}: revision ${out.revision} in "${room.name}"`,
+    };
+  } catch (err) {
+    appFail(err);
+  }
+}
+
+export async function appSettings(ctx: Ctx, opts: { app?: string; enabled?: boolean; banner?: string; writeAccess?: string; room?: string }) {
+  const appId = opts.app?.trim() ?? "";
+  if (!appId) throw new UserError("app set needs an app id");
+  const banner = parseOnOff("--banner", opts.banner);
+  const writeAccess = parseWrite(opts.writeAccess);
+  if (opts.enabled === undefined && banner === undefined && !writeAccess) throw new UserError("app set needs --on, --off, --banner on|off or --write members|owner");
+  const acct = account(ctx);
+  const room = await currentRoom(acct, opts.room);
+  try {
+    const meta = await updateAppSettings(acct.http, room.spaceId, appId, {
+      ...(opts.enabled !== undefined ? { enabled: opts.enabled } : {}),
+      ...(banner !== undefined ? { banner } : {}),
+      ...(writeAccess ? { write_access: writeAccess } : {}),
+    });
+    return {
+      json: { spaceId: room.spaceId, ...meta },
+      text: `${meta.app_id}: ${meta.enabled ? "on" : "off"}, banner ${meta.banner ? "on" : "off"}, write: ${meta.write_access} in "${room.name}"`,
+    };
+  } catch (err) {
+    appFail(err);
+  }
+}
+
+export async function appDelete(ctx: Ctx, opts: { app?: string; room?: string }) {
+  const appId = opts.app?.trim() ?? "";
+  if (!appId) throw new UserError("app delete needs an app id");
+  const acct = account(ctx);
+  const room = await currentRoom(acct, opts.room);
+  try {
+    await deleteApp(acct.http, room.spaceId, appId);
+    return { json: { spaceId: room.spaceId, app_id: appId, deleted: true }, text: `deleted ${appId} and its shared data from "${room.name}"` };
+  } catch (err) {
+    appFail(err);
+  }
 }
 
 export async function whisper(ctx: Ctx, opts: { text?: string; to?: string; room?: string; replyTo?: string }) {

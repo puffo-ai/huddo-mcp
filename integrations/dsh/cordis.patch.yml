@@ -7,7 +7,7 @@
         command: npx
         args:
           - -y
-          - huddoai@0.8.1
+          - huddoai@0.9.0
           - mcp
         env:
           HUDDO_DAEMON: '0'

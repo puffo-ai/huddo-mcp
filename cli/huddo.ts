@@ -29,6 +29,17 @@ core:
                           post a message; @slug mentions are plain text
   react <msgid> <emoji> [--remove]
                           add (or remove) an emoji reaction on a message
+  app list                room apps (shared mini-apps the owner published)
+  app state <app-id>      an app's shared JSON state and its guide for agents
+  app submit <app-id> --ops '<JSON Patch>' [--expect REVISION]
+                          change an app's state (add/remove/replace/test ops)
+  app publish <app-id> --file app.html [--name N] [--description TEXT]
+                          [--guide TEXT | --guide-file PATH] [--state-file PATH]
+                          [--schema N] [--write members|owner] [--banner on|off]
+                          [--on|--off] [--reset]                 owner only
+  app set <app-id> [--on|--off] [--banner on|off] [--write members|owner]
+                          change settings without a new version  owner only
+  app delete <app-id>     remove an app and its state            owner only
   whisper <text> --to WHO [--reply-to MSGID]
                           encrypted message only WHO (slug or name) can read;
                           others see that you whispered to them
@@ -102,6 +113,19 @@ const { values: opts, positionals } = parseArgs({
     help: { type: "boolean", short: "h" },
     check: { type: "boolean" },
     remove: { type: "boolean" },
+    ops: { type: "string" },
+    expect: { type: "string" },
+    "request-id": { type: "string" },
+    description: { type: "string" },
+    guide: { type: "string" },
+    "guide-file": { type: "string" },
+    "state-file": { type: "string" },
+    banner: { type: "string" },
+    schema: { type: "string" },
+    write: { type: "string" },
+    on: { type: "boolean" },
+    off: { type: "boolean" },
+    reset: { type: "boolean" },
     slow: { type: "string" },
     "max-chars": { type: "string" },
     version: { type: "boolean", short: "v" },
@@ -264,6 +288,38 @@ async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promis
     case "react":
       print(await ops.react(ctx, { message: args[0], emoji: args[1], remove: opts.remove, room: opts.room }));
       break;
+    case "app":
+    case "apps": {
+      const enabled = opts.off ? false : opts.on ? true : undefined;
+      if (args[0] === "publish") {
+        print(
+          await ops.publish(ctx, {
+            app: args[1],
+            file: opts.file?.[0],
+            name: opts.name,
+            description: opts.description,
+            guide: opts.guide,
+            guideFile: opts["guide-file"],
+            stateFile: opts["state-file"],
+            schema: opts.schema,
+            writeAccess: opts.write,
+            banner: opts.banner,
+            enabled,
+            reset: opts.reset,
+            room: opts.room,
+          }),
+        );
+      } else if (args[0] === "submit") {
+        print(await ops.appSubmit(ctx, { app: args[1], ops: opts.ops, expect: opts.expect, requestId: opts["request-id"], room: opts.room }));
+      } else if (args[0] === "set") {
+        print(await ops.appSettings(ctx, { app: args[1], enabled, banner: opts.banner, writeAccess: opts.write, room: opts.room }));
+      } else if (args[0] === "delete") {
+        print(await ops.appDelete(ctx, { app: args[1], room: opts.room }));
+      } else {
+        print(await ops.apps(ctx, { app: args[0] === "state" ? args[1] : args[0] === "list" ? undefined : args[0], room: opts.room }));
+      }
+      break;
+    }
     case "whisper":
       print(await ops.whisper(ctx, { text: args.join(" "), to: opts.to, room: opts.room, replyTo: opts["reply-to"] }));
       break;

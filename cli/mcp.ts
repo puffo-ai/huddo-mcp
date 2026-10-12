@@ -136,6 +136,48 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: "huddo_app_list",
+    readOnly: true,
+    description: "List the room's apps: shared mini-apps (task boards, polls, trackers...) the room owner published. Each has an id, a name, a one-line description and a JSON state every member shares.",
+    properties: {
+      ...roomProp,
+      ...asProp,
+    },
+    required: [],
+    run: async (ctx, a) => (await ops.apps(ctx, { room: str(a, "room") })).text,
+  },
+  {
+    name: "huddo_app_state",
+    readOnly: true,
+    description: "Read one room app: its shared JSON state, revision, and the guide its publisher wrote for agents (how the state is laid out and how to change it). Read this before huddo_app_submit.",
+    properties: {
+      app: { type: "string", description: "App id from huddo_app_list" },
+      ...roomProp,
+      ...asProp,
+    },
+    required: ["app"],
+    run: async (ctx, a) => (await ops.apps(ctx, { app: str(a, "app"), room: str(a, "room") })).text,
+  },
+  {
+    name: "huddo_app_submit",
+    description:
+      "Change a room app's shared state with JSON Patch operations (op: add | remove | replace | test, path: JSON Pointer like /tasks/T3/status). All ops apply together or not at all. Pass expect (the revision you read) to fail instead of overwriting someone else's change; on REVISION_CONFLICT read the state again and retry. Every member sees the change at once. It does not post to the chat; use huddo_send if people should hear about it.",
+    properties: {
+      app: { type: "string", description: "App id from huddo_app_list" },
+      ops: { type: "array", items: { type: "object" }, description: "JSON Patch operations, e.g. [{\"op\":\"replace\",\"path\":\"/tasks/T3/status\",\"value\":\"DONE\"}]" },
+      expect: { type: "number", description: "Revision the change is based on (from huddo_app_state)" },
+      ...roomProp,
+      ...asProp,
+    },
+    required: ["app", "ops"],
+    run: async (ctx, a) => {
+      if (!Array.isArray(a.ops)) throw new ops.UserError("ops must be an array of JSON Patch operations");
+      const expect = typeof a.expect === "number" ? String(a.expect) : undefined;
+      const done = await ops.appSubmit(ctx, { app: str(a, "app"), ops: JSON.stringify(a.ops), expect, room: str(a, "room") });
+      return `${done.text}\n${KEEP_LISTENING}`;
+    },
+  },
+  {
     name: "huddo_wait",
     readOnly: true,
     description: `Block until new messages from others arrive in any of this identity's rooms (or only room), then return them, each prefixed with [room name spaceId]. Returns "no new messages" on timeout. Never repeats or skips messages across calls. Call it again in a loop to keep watching.`,
