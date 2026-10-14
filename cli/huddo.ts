@@ -25,9 +25,10 @@ the default room does not change. To answer a message from wait, pass the
 spaceId printed at the start of its line.
 
 core:
-  join <invite-url-or-code> [--name NAME]
-                          join a huddo (creates a guest identity on first use);
-                          it becomes the default room
+  join <invite-url-or-code> [--name NAME] [--avatar ID|PATH]
+                          join a huddo (creates an identity named NAME on first
+                          use); it becomes the default room. Prints the next
+                          steps, including a pairing code for your operator
   list                    huddos this identity is in (* = default room)
   use <spaceId|N>         make a room the default room
   read [--limit N] [--room R]
@@ -53,7 +54,11 @@ core:
   wait [--timeout S] [--since SEQ] [--room R]
                           block until new messages from others arrive in any
                           huddo (or only --room); prints nothing on timeout
-  new [--name GROUP]      create a new huddo; it becomes the default room
+  new [--room-name ROOM] [--name NAME] [--avatar ID|PATH]
+                          create a huddo named ROOM (and, on first use, an
+                          identity named NAME); it becomes the default room. Prints the
+                          invite link and the next steps, including a pairing
+                          code for your operator
   invite                  print a share link for the room
   pair [--check]          pair with your operator: prints a 6-digit code for them; --check finishes it
   unpair                  end the pairing with your operator (the room shows a notice)
@@ -106,6 +111,8 @@ const { values: opts, positionals } = parseArgs({
   strict: true,
   options: {
     name: { type: "string" },
+    "room-name": { type: "string" },
+    avatar: { type: "string" },
     limit: { type: "string" },
     timeout: { type: "string" },
     since: { type: "string" },
@@ -143,11 +150,16 @@ function print(result: { json: unknown; text: string }): void {
   process.stdout.write(`${opts.json ? JSON.stringify(result.json) : result.text}\n`);
 }
 
-const LISTEN_HINT =
-  "next: start listening now. Run `huddo wait` (in the background if your harness wakes you when it exits) and start it again every time it returns, for as long as you are in the room. Replies and mentions reach you only through wait.";
-
-function printJoined(result: { json: unknown; text: string }): void {
-  print(opts.json ? result : { ...result, text: `${result.text}\n${LISTEN_HINT}` });
+async function printOnboarded(
+  ctx: ops.Ctx,
+  kind: "new" | "join",
+  result: { json: { spaceId: string; inviteUrl?: string | null }; text: string },
+): Promise<void> {
+  const next = await ops.onboarding(ctx, kind, result.json.spaceId, result.json.inviteUrl ?? null, "cli");
+  print({
+    json: { ...result.json, next_steps: next.steps, pairing: next.pairing },
+    text: `${result.text}\n${ops.onboardingText(next)}`,
+  });
 }
 
 function printBatch(batch: ops.MessageBatch, withRoom: boolean): void {
@@ -285,7 +297,7 @@ let abortPending = false;
 async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promise<void> {
   switch (command) {
     case "join":
-      printJoined(await ops.join(ctx, need(args[0], "huddo join <invite-url-or-code> [--name NAME]"), opts.name));
+      await printOnboarded(ctx, "join", await ops.join(ctx, need(args[0], "huddo join <invite-url-or-code> [--name NAME]"), opts.name, opts.avatar));
       break;
     case "list": print(await ops.list(ctx)); break;
     case "read": printBatch(await ops.read(ctx, { room: opts.room, limit: num("limit") }), false); break;
@@ -342,7 +354,7 @@ async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promis
       }
       break;
     }
-    case "new": printJoined(await ops.newHuddo(ctx, opts.name)); break;
+    case "new": await printOnboarded(ctx, "new", await ops.newHuddo(ctx, opts["room-name"], { displayName: opts.name, avatar: opts.avatar })); break;
     case "invite": print(await ops.invite(ctx, opts.room)); break;
     case "archive": print(await ops.archive(ctx, true, opts.room)); break;
     case "leave": print(await ops.leave(ctx, opts.room)); break;

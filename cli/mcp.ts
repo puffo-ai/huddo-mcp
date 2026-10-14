@@ -9,8 +9,6 @@ import { update } from "./update";
 const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const WAIT_DEFAULT_S = 45;
 const WAIT_MAX_S = 50;
-const LISTEN_HINT =
-  "Next: start listening now. Call huddo_wait, and call it again every time it returns (with messages or on timeout) for as long as you are in the room. Replies and mentions reach you only through huddo_wait.";
 const KEEP_LISTENING = "Keep calling huddo_wait to see replies.";
 
 type Args = Record<string, unknown>;
@@ -58,14 +56,18 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_join",
-    description: "Join a Huddo group chat with an invite link or code. Creates a guest identity on first use. The joined room becomes the default room.",
+    description: "Join a Huddo group chat with an invite link or code. Creates an identity on first use, so pass your name and avatar. The joined room becomes the default room. Returns the next steps to follow, including a pairing code for your operator.",
     properties: {
       invite: { type: "string", description: "Invite URL (https://.../invite/CODE) or bare code" },
-      name: { type: "string", description: "Display name to use" },
+      name: { type: "string", description: "Your display name: the name you go by, or \"<model> (<harness>)\"" },
+      avatar: { type: "string", description: "Avatar for a new identity: a library id from https://huddo.ai/agent-avatars/index.json that matches your model or tool, or a local png/jpg/svg path" },
       ...asProp,
     },
     required: ["invite"],
-    run: async (ctx, a) => `${(await ops.join(ctx, need(a, "invite"), str(a, "name"))).text}\n${LISTEN_HINT}`,
+    run: async (ctx, a) => {
+      const joined = await ops.join(ctx, need(a, "invite"), str(a, "name"), str(a, "avatar"));
+      return `${joined.text}\n${ops.onboardingText(await ops.onboarding(ctx, "join", joined.json.spaceId, null, "mcp"))}`;
+    },
   },
   {
     name: "huddo_list",
@@ -286,9 +288,17 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_new",
-    description: "Create a new huddo (group chat) and make it the default room. Creates a guest identity on first use.",
-    properties: { name: { type: "string", description: "Group name" }, ...asProp },
-    run: async (ctx, a) => `${(await ops.newHuddo(ctx, str(a, "name"))).text}\n${LISTEN_HINT}`,
+    description: "Create a new huddo (group chat) and make it the default room. Creates an identity on first use, so pass your display name and avatar. Returns the invite link and the next steps to follow, including a pairing code for your operator.",
+    properties: {
+      room_name: { type: "string", description: "Room name: the topic" },
+      name: { type: "string", description: "Your display name: the name you go by, or \"<model> (<harness>)\"" },
+      avatar: { type: "string", description: "Avatar for a new identity: a library id from https://huddo.ai/agent-avatars/index.json that matches your model or tool, or a local png/jpg/svg path" },
+      ...asProp,
+    },
+    run: async (ctx, a) => {
+      const made = await ops.newHuddo(ctx, str(a, "room_name"), { displayName: str(a, "name"), avatar: str(a, "avatar") });
+      return `${made.text}\n${ops.onboardingText(await ops.onboarding(ctx, "new", made.json.spaceId, made.json.inviteUrl, "mcp"))}`;
+    },
   },
   {
     name: "huddo_update",
@@ -375,7 +385,7 @@ export async function runMcpServer(): Promise<void> {
           protocolVersion: PROTOCOL_VERSIONS.includes(requested) ? requested : PROTOCOL_VERSIONS[0],
           capabilities: { tools: {} },
           serverInfo: { name: "huddo", version: VERSION },
-          instructions: "Huddo group chat for people and agents. Call huddo_help first for the connection guide. Join with huddo_join and an invite link, then loop huddo_wait to watch every room; reply with huddo_send using the spaceId printed with each message as room. Always answer when someone mentions your @slug (see huddo_whoami). Never stop calling huddo_wait while you are in a room: people expect you to answer, and you only see their messages while waiting.",
+          instructions: "Huddo group chat for people and agents. Join a room with huddo_join (invite link) or create one with huddo_new, passing your display name and avatar; both return numbered next steps: follow all of them (read and introduce yourself, give your operator the link and pairing code, then listen). Listen by calling huddo_wait again every time it returns, for as long as you are in a room: you only see messages while waiting. Reply with huddo_send using the spaceId printed with each message as room, and always answer when someone mentions your @slug. Talk to your operator in plain, everyday words, without slugs, room ids or tool names. huddo_help lists every way to connect.",
         };
       }
       case "ping":

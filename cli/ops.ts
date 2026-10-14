@@ -40,7 +40,7 @@ import {
 import { fetchProfiles, updateProfile, uploadAvatar } from "../src/ui/services/profile-service";
 import { MAX_PROFILE_AVATAR_BYTES } from "../src/features/profiles/domain/human-profile";
 import { defaultGroupName, invitePath, mainChannelId } from "../src/huddo/config";
-import { displayNameError, randomAgentName } from "../src/huddo/names";
+import { displayNameError, hexFrom, randomAgentName, usernameFor } from "../src/huddo/names";
 import {
   ORIGIN,
   SERVER_URL,
@@ -188,8 +188,8 @@ function checkName(name?: string) {
 
 async function createIdentity(rt: Runtime, displayName?: string): Promise<Account> {
   checkName(displayName);
-  const username = `guest-${Array.from(rt.crypto.generateRandomBytes(5), (b) => b.toString(16).padStart(2, "0")).join("")}`;
   const name = displayName?.trim() || randomAgentName();
+  const username = usernameFor(name, (n) => hexFrom(rt.crypto.generateRandomBytes(n)));
   const result = await signup(
     SERVER_URL,
     "",
@@ -327,7 +327,7 @@ export function formatBatch(batch: MessageBatch, withRoom: boolean): string {
     .join("\n");
 }
 
-export async function join(ctx: Ctx, invite: string, name?: string) {
+export async function join(ctx: Ctx, invite: string, name?: string, avatar?: string) {
   checkName(name);
   const code = inviteCode(invite);
   let preview: InvitationLinkPreview;
@@ -359,14 +359,21 @@ export async function join(ctx: Ctx, invite: string, name?: string) {
       return { spaceId: preview.space_id, channelId, name: preview.space_name };
     })();
   await makeDefault(acct, room, !alreadyMember);
+  if (avatar) await updateAvatar(ctx, avatar);
   return {
     json: { slug: acct.identity.slug, created, joined: !alreadyMember, ...room },
     text: `${created ? "signed up as" : "as"} ${acct.identity.slug}: ${alreadyMember ? "already in" : "joined"} "${room.name}" (${room.spaceId})`,
   };
 }
 
-export async function newHuddo(ctx: Ctx, name?: string) {
-  const { acct, created } = await accountOrCreate(ctx);
+export async function newHuddo(ctx: Ctx, name?: string, me: { displayName?: string; avatar?: string } = {}) {
+  checkName(me.displayName);
+  const { acct, created } = await accountOrCreate(ctx, me.displayName);
+  if (!created && me.displayName?.trim()) {
+    await updateProfile(acct.http, acct.identity.slug, { display_name: me.displayName.trim() });
+    rememberNames({ [acct.identity.slug]: me.displayName.trim() });
+  }
+  if (me.avatar) await updateAvatar(ctx, me.avatar);
   const signer = await eventSigner(ctx.rt, acct);
   const made = await createSpaceWithGeneral(
     {
@@ -380,11 +387,74 @@ export async function newHuddo(ctx: Ctx, name?: string) {
   const room = { spaceId: made.spaceId, channelId: made.channelId, name: made.spaceName };
   await makeDefault(acct, room, true);
   const link = await invite(ctx, room.spaceId).then((r) => r.json.url, () => null);
-  const share = link ? `\nShare this invite link with your operator and anyone else who should join: ${link}` : "";
   return {
     json: { slug: acct.identity.slug, created, ...room, inviteUrl: link },
-    text: `${created ? "signed up as" : "as"} ${acct.identity.slug}: created "${room.name}" (${room.spaceId})${share}`,
+    text: `${created ? "signed up as" : "as"} ${acct.identity.slug}: created "${room.name}" (${room.spaceId})${link ? `\ninvite link: ${link}` : ""}`,
   };
+}
+
+export type Surface = "cli" | "mcp";
+
+const STEP_WORDS: Record<Surface, { read: string; send: string; pair: string; listen: string }> = {
+  cli: {
+    read: "`huddo read --limit 30`",
+    send: "`huddo send`",
+    pair: "run `huddo pair`",
+    listen:
+      "run `huddo wait --timeout 600` in the background if your harness wakes you when it exits, otherwise loop `huddo wait --timeout 50`; start it again every time it returns",
+  },
+  mcp: {
+    read: "huddo_read (limit 30)",
+    send: "huddo_send",
+    pair: "call huddo_pair",
+    listen: "call huddo_wait, and call it again every time it returns",
+  },
+};
+
+export interface Onboarding {
+  steps: string[];
+  pairing: { code: string; expiresInSeconds: number } | null;
+}
+
+export async function onboarding(ctx: Ctx, kind: "new" | "join", spaceId: string, inviteUrl: string | null, surface: Surface): Promise<Onboarding> {
+  const acct = account(ctx);
+  const w = STEP_WORDS[surface];
+  const paired = Boolean(loadState(acct.identity.slug).operator);
+  const pairing = paired
+    ? null
+    : await pair(ctx, spaceId).then(
+        (r) => ({ code: r.json.code, expiresInSeconds: r.json.expiresInSeconds }),
+        () => null,
+      );
+  const tell = (what: string) => `Tell your operator in plain, everyday words (no slugs, room ids or commands): ${what}`;
+  const open = kind === "new" && inviteUrl ? `Open ${inviteUrl} to join. Then` : "In the room,";
+  const pairStep = pairing
+    ? tell(
+        `"${open} click your avatar, choose Pair an agent and enter ${pairing.code}." The code works for 5 minutes; if it runs out before they enter it, ${w.pair} again and send the new code. Pairing tells you which messages come from them.`,
+      )
+    : kind === "new" && inviteUrl
+      ? tell(`"Open ${inviteUrl} to join."`)
+      : null;
+  const steps =
+    kind === "new"
+      ? [
+          `Post a one-line introduction with ${w.send}: who you are and what you can help with.`,
+          "Post one short message that sums up what you and your operator discussed, so whoever joins has the context. Leave out secrets and private details.",
+        ]
+      : [
+          `Read the recent messages with ${w.read} to learn the context before you speak.`,
+          `Post a one-line introduction with ${w.send}: who you are and what you can help with.`,
+        ];
+  if (pairStep) steps.push(pairStep);
+  steps.push(
+    `Start listening: ${w.listen}. You only see messages and new members while you listen, so keep it up for as long as you are in the room. If you can't keep listening, tell your operator.`,
+  );
+  return { steps, pairing };
+}
+
+export function onboardingText(o: Onboarding): string {
+  const head = `Next steps, in order. Don't skip ${o.steps.length}: you only hear the room while you are listening.`;
+  return [head, ...o.steps.map((step, i) => `${i + 1}. ${step}`)].join("\n");
 }
 
 export async function invite(ctx: Ctx, roomArg?: string) {
