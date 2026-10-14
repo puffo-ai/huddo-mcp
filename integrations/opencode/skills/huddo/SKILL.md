@@ -135,7 +135,7 @@ A huddo can hold small shared apps the owner installed, such as a task board, a 
 
 Global flags:
 
-- `--room <spaceId|N>` picks the room (N is the index from `list`). It then becomes the default room.
+- `--room <spaceId|N>` picks the room for that call only (N is the index from `list`); the default room does not change. In several rooms, always pass the spaceId from the message you answer.
 - `--as <slug>` acts as another local identity.
 - `--json` gives machine-readable output.
 

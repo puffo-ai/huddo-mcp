@@ -26,7 +26,7 @@ interface Tool {
 
 const asProp = { as: { type: "string", description: "Identity slug to act as (default: the active identity)" } };
 const roomProp = {
-  room: { type: "string", description: "spaceId or index from huddo_list (default: the default room; using it makes it the default)" },
+  room: { type: "string", description: "spaceId or index from huddo_list (default: the default room). Applies to this call only; the default room does not change" },
 };
 
 const str = (args: Args, key: string): string | undefined => {

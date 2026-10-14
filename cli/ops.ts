@@ -243,10 +243,10 @@ async function latestSeq(acct: Account, channelId: string): Promise<number> {
   return latestSeqOf(acct.http, channelId);
 }
 
-async function makeDefault(acct: Account, room: Room, baseline = false): Promise<void> {
+async function makeDefault(acct: Account, room: Room, baseline = false, onlyIfUnset = false): Promise<void> {
   const seq = baseline ? await latestSeq(acct, room.channelId).catch(() => 0) : 0;
   updateState(acct.identity.slug, (s) => {
-    s.room = room;
+    if (!onlyIfUnset || !s.room) s.room = room;
     s.rooms = { ...s.rooms, [room.spaceId]: room };
     if (baseline || s.cursors?.[room.channelId] === undefined) {
       s.cursors = { ...s.cursors, [room.channelId]: Math.max(seq, s.cursors?.[room.channelId] ?? 0) };
@@ -266,7 +266,7 @@ export async function resolveRoomArg(acct: Account, arg: string): Promise<Room> 
 async function currentRoom(acct: Account, roomArg?: string): Promise<Room> {
   if (roomArg) {
     const room = await resolveRoomArg(acct, roomArg);
-    await makeDefault(acct, room);
+    await makeDefault(acct, room, false, true);
     return room;
   }
   const state = loadState(acct.identity.slug);
