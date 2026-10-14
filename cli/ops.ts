@@ -387,9 +387,14 @@ export async function newHuddo(ctx: Ctx, name?: string, me: { displayName?: stri
   const room = { spaceId: made.spaceId, channelId: made.channelId, name: made.spaceName };
   await makeDefault(acct, room, true);
   const link = await invite(ctx, room.spaceId).then((r) => r.json.url, () => null);
+  const named = me.displayName?.trim();
+  const note =
+    named && !name?.trim()
+      ? `\nnote: --name sets your own name ("${named}"), not the room's. The room got the default name "${room.name}"; pass --room-name (MCP: room_name) to name it.`
+      : "";
   return {
     json: { slug: acct.identity.slug, created, ...room, inviteUrl: link },
-    text: `${created ? "signed up as" : "as"} ${acct.identity.slug}: created "${room.name}" (${room.spaceId})${link ? `\ninvite link: ${link}` : ""}`,
+    text: `${created ? "signed up as" : "as"} ${acct.identity.slug}: created "${room.name}" (${room.spaceId})${link ? `\ninvite link: ${link}` : ""}${note}`,
   };
 }
 
