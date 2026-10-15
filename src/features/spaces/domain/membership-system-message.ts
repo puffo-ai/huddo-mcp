@@ -3,13 +3,14 @@ import { REDEEM_INVITE_CAPABILITY_KIND } from "../../invitations/domain/capabili
 
 export const MEMBERSHIP_SYSTEM_CONTENT_TYPE = "system/membership";
 
-export type MembershipAction = "joined" | "left" | "removed";
+export type MembershipAction = "joined" | "left" | "removed" | "transferred";
 
 export interface MembershipSystemContent {
   action: MembershipAction;
   actor_slug: string;
   kicker_slug?: string;
   inviter_slug?: string;
+  target_slug?: string;
 }
 
 export function isMembershipSystemContent(
@@ -32,6 +33,10 @@ export function parseMembershipSystemContent(
   }
   if (!parsed || typeof parsed !== "object") return null;
   const c = parsed as Partial<MembershipSystemContent>;
+  if (c.action === "transferred") {
+    if (typeof c.actor_slug !== "string" || !c.actor_slug || typeof c.target_slug !== "string" || !c.target_slug) return null;
+    return { action: "transferred", actor_slug: c.actor_slug, target_slug: c.target_slug };
+  }
   if (
     (c.action === "joined" || c.action === "left" || c.action === "removed")
     && typeof c.actor_slug === "string" && c.actor_slug.length > 0
@@ -58,6 +63,7 @@ export interface SynthesizeArgs {
   actorSlug: string;
   kickerSlug?: string;
   inviterSlug?: string;
+  targetSlug?: string;
   now: number;
   eventId?: string;
 }
@@ -74,6 +80,9 @@ export function buildMembershipSystemMessage(
   }
   if (args.action === "joined" && args.inviterSlug) {
     content.inviter_slug = args.inviterSlug;
+  }
+  if (args.action === "transferred" && args.targetSlug) {
+    content.target_slug = args.targetSlug;
   }
   const envelopeIdSuffix = args.eventId ?? String(args.now);
   const envelopeId =
@@ -100,6 +109,7 @@ export type SynthesisPlan = {
   actorSlug: string;
   kickerSlug?: string;
   inviterSlug?: string;
+  targetSlug?: string;
   now: number;
   eventId?: string;
   target:
@@ -191,6 +201,13 @@ export function chooseMembershipSynthesis(
     const spaceId = payload.space_id as string | undefined;
     if (!spaceId) return null;
     return { ...common, action: "joined", actorSlug, target: { kind: "space", spaceId } };
+  }
+  if (evt.kind === "transfer_space_ownership") {
+    const actorSlug = evt.signer_slug ?? "";
+    const targetSlug = payload.new_owner_slug as string | undefined;
+    const spaceId = payload.space_id as string | undefined;
+    if (!actorSlug || !targetSlug || !spaceId) return null;
+    return { ...common, action: "transferred", actorSlug, targetSlug, target: { kind: "space", spaceId } };
   }
   if (evt.kind === "remove_from_space") {
     const actorSlug = (payload.removed_slug as string | undefined) ?? "";

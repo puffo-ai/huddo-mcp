@@ -3,7 +3,18 @@ import { basename, extname, join as joinPath } from "node:path";
 import { HttpError } from "../src/http/types";
 import { signup } from "../src/identity/device/signup";
 import { decryptKeyBackup, exportKeyBackup } from "../src/identity/primitives/backup";
-import { createChannel, createSpace, fetchChannels, fetchSpaceMembers, fetchSpaces, leaveSpace, removeFromSpace, setSpaceArchived, updateChannel } from "../src/features/spaces/adapters";
+import {
+  createChannel,
+  createSpace,
+  fetchChannels,
+  fetchSpaceMembers,
+  fetchSpaces,
+  leaveSpace,
+  removeFromSpace,
+  setSpaceArchived,
+  transferSpaceOwnership,
+  updateChannel,
+} from "../src/features/spaces/adapters";
 import type { Space } from "../src/features/spaces/domain";
 import { createSpaceWithGeneral } from "../src/features/spaces/application/space-flow";
 import {
@@ -422,11 +433,12 @@ export async function newHuddo(ctx: Ctx, name?: string, me: { displayName?: stri
 
 export type Surface = "cli" | "mcp";
 
-const STEP_WORDS: Record<Surface, { read: string; send: string; pair: string; listen: string }> = {
+const STEP_WORDS: Record<Surface, { read: string; send: string; pair: string; avatar: string; listen: string }> = {
   cli: {
     read: "`huddo read --limit 30`",
     send: "`huddo send`",
     pair: "run `huddo pair`",
+    avatar: "`huddo identity update-avatar <library-id or image path>`",
     listen:
       "run `huddo wait --timeout 600` in the background if your harness wakes you when it exits, otherwise loop `huddo wait --timeout 50`; start it again every time it returns",
   },
@@ -434,6 +446,7 @@ const STEP_WORDS: Record<Surface, { read: string; send: string; pair: string; li
     read: "huddo_read (limit 30)",
     send: "huddo_send",
     pair: "call huddo_pair",
+    avatar: "huddo_update_avatar",
     listen: "call huddo_wait, and call it again every time it returns",
   },
 };
@@ -457,10 +470,10 @@ export async function onboarding(ctx: Ctx, kind: "new" | "join", spaceId: string
   const open = kind === "new" && inviteUrl ? `Open ${inviteUrl} to join. Then` : "In the room,";
   const pairStep = pairing
     ? tell(
-        `"${open} click your avatar, choose Pair an agent and enter ${pairing.code}." The code works for 5 minutes; if it runs out before they enter it, ${w.pair} again and send the new code. Pairing tells you which messages come from them.`,
+        `"${open} click your avatar, choose Pair your agent and enter ${pairing.code}." The code works for 5 minutes; if it runs out before they enter it, ${w.pair} again and send the new code. Pairing tells you which messages come from them. Put the link and the code word for word in your final reply to them: some harnesses only show your last message, or shorten it.`,
       )
     : kind === "new" && inviteUrl
-      ? tell(`"Open ${inviteUrl} to join."`)
+      ? tell(`"Open ${inviteUrl} to join." Put the link word for word in your final reply to them: some harnesses only show your last message, or shorten it.`)
       : null;
   const steps =
     kind === "new"
@@ -472,6 +485,12 @@ export async function onboarding(ctx: Ctx, kind: "new" | "join", spaceId: string
           `Read the recent messages with ${w.read} to learn the context before you speak.`,
           `Post a one-line introduction with ${w.send}: who you are and what you can help with.`,
         ];
+  const [profile] = await fetchProfiles(acct.http, [acct.identity.slug]).catch(() => []);
+  if (!profile?.avatar_url) {
+    steps.push(
+      `Set an avatar people can tell apart, ideally your model's or tool's logo from ${ORIGIN}/agent-avatars/index.json: ${w.avatar}.`,
+    );
+  }
   if (pairStep) steps.push(pairStep);
   steps.push(
     `Start listening: ${w.listen}. You only see messages and new members while you listen, so keep it up for as long as you are in the room. If you can't keep listening, tell your operator.`,
@@ -514,15 +533,50 @@ export async function archive(ctx: Ctx, archived: boolean, roomArg?: string) {
   return { json: { spaceId: room.spaceId, room: room.name, archivedAt: resp.archived_at }, text };
 }
 
-export async function leave(ctx: Ctx, roomArg?: string) {
+export async function leave(ctx: Ctx, roomArg?: string, to?: string) {
   const acct = account(ctx);
   const room = await currentRoom(acct, roomArg);
-  await leaveSpace(acct.http, ctx.rt.crypto, await eventSigner(ctx.rt, acct), room.spaceId);
+  const roster = await fetchSpaceMembers(acct.http, room.spaceId);
+  const owner = roster.some((m) => m.slug === acct.identity.slug && m.role === "owner");
+  let heir: { slug: string; name: string | null } | null = null;
+  if (owner) {
+    if (!to) {
+      throw new UserError(
+        `you own "${room.name}": hand it to another member and leave with \`huddo leave --to <member>\` (MCP: huddo_leave with to), or archive it`,
+      );
+    }
+    heir = await resolveMember(acct, room.spaceId, to);
+    if (heir.slug === acct.identity.slug) throw new UserError("pick another member as the new owner");
+  } else if (to) {
+    throw new UserError(`only the owner of "${room.name}" can hand it over`);
+  }
+  await leaveSpace(acct.http, ctx.rt.crypto, await eventSigner(ctx.rt, acct), room.spaceId, [], heir?.slug);
   updateState(acct.identity.slug, (s) => {
     if (s.room?.spaceId === room.spaceId) delete s.room;
     if (s.rooms) delete s.rooms[room.spaceId];
   });
-  return { json: { spaceId: room.spaceId, room: room.name, left: true }, text: `left "${room.name}" (${room.spaceId})` };
+  const handedTo = heir ? ` and handed it to ${heir.name ? `${heir.slug} (${heir.name})` : heir.slug}` : "";
+  return {
+    json: { spaceId: room.spaceId, room: room.name, left: true, newOwner: heir?.slug ?? null },
+    text: `left "${room.name}" (${room.spaceId})${handedTo}`,
+  };
+}
+
+export async function transfer(ctx: Ctx, who: string, roomArg?: string) {
+  const acct = account(ctx);
+  const room = await currentRoom(acct, roomArg);
+  const roster = await fetchSpaceMembers(acct.http, room.spaceId);
+  if (!roster.some((m) => m.slug === acct.identity.slug && m.role === "owner")) {
+    throw new UserError(`only the owner of "${room.name}" can hand it over`);
+  }
+  const heir = await resolveMember(acct, room.spaceId, who);
+  if (heir.slug === acct.identity.slug) throw new UserError("pick another member as the new owner");
+  await transferSpaceOwnership(acct.http, ctx.rt.crypto, await eventSigner(ctx.rt, acct), room.spaceId, heir.slug);
+  const label = heir.name ? `${heir.slug} (${heir.name})` : heir.slug;
+  return {
+    json: { spaceId: room.spaceId, room: room.name, newOwner: heir.slug },
+    text: `handed "${room.name}" to ${label}; you stay in it as a member`,
+  };
 }
 
 const PAIR_TTL_MS = 5 * 60 * 1000;
@@ -546,7 +600,7 @@ export async function pair(ctx: Ctx, roomArg?: string) {
   });
   const text = [
     `pairing code ${code} for "${room.name}" (valid 5 minutes)`,
-    `Send it to your operator through your own chat with them, never in the huddo: they open "${room.name}" in Huddo, choose Profile -> Pair an agent and enter ${code}.`,
+    `Send it to your operator through your own chat with them, never in the huddo: they open "${room.name}" in Huddo, click their avatar, choose Pair your agent and enter ${code}.`,
     "Then run `huddo pair --check` (MCP: huddo_pair_check) until it reports paired.",
   ].join("\n");
   return { json: { code, spaceId: room.spaceId, room: room.name, expiresInSeconds: PAIR_TTL_MS / 1000 }, text };
@@ -1354,14 +1408,33 @@ export async function identityUse(slug: string) {
   return { json: { slug, active: true }, text: `active identity: ${slug}` };
 }
 
-export async function updateName(ctx: Ctx, name: string) {
+async function profileTarget(acct: Account, forOperator: boolean | undefined): Promise<{ slug: string; whose: string }> {
+  if (!forOperator) return { slug: acct.identity.slug, whose: "" };
+  const operator = (await fetchPairs(acct.http, [acct.identity.slug]))[acct.identity.slug];
+  if (!operator) throw new UserError("you are not paired with an operator; run `huddo pair` first");
+  return { slug: operator, whose: "your operator's " };
+}
+
+async function saveProfile(acct: Account, slug: string, patch: { display_name?: string; avatar_url?: string }) {
+  try {
+    await updateProfile(acct.http, slug, patch);
+  } catch (e) {
+    if (e instanceof HttpError && e.status === 403 && slug !== acct.identity.slug) {
+      throw new UserError("the server says you are no longer paired with this operator; run `huddo pair` again");
+    }
+    throw e;
+  }
+}
+
+export async function updateName(ctx: Ctx, name: string, forOperator?: boolean) {
   const trimmed = name.trim();
   const error = displayNameError(trimmed);
   if (error) throw new UserError(error);
   const acct = account(ctx);
-  await updateProfile(acct.http, acct.identity.slug, { display_name: trimmed });
-  rememberNames({ [acct.identity.slug]: trimmed });
-  return { json: { slug: acct.identity.slug, display_name: trimmed }, text: `display name set to "${trimmed}"` };
+  const target = await profileTarget(acct, forOperator);
+  await saveProfile(acct, target.slug, { display_name: trimmed });
+  rememberNames({ [target.slug]: trimmed });
+  return { json: { slug: target.slug, display_name: trimmed }, text: `${target.whose}display name set to "${trimmed}"` };
 }
 
 function framedSvg(svg: string): Uint8Array {
@@ -1392,13 +1465,14 @@ async function avatarBytes(arg: string): Promise<{ bytes: Uint8Array; label: str
   return { bytes: framedSvg(await svg.text()), label: entry.label };
 }
 
-export async function updateAvatar(ctx: Ctx, arg: string) {
+export async function updateAvatar(ctx: Ctx, arg: string, forOperator?: boolean) {
   const acct = account(ctx);
+  const target = await profileTarget(acct, forOperator);
   const { bytes, label } = await avatarBytes(arg);
   if (bytes.length > MAX_PROFILE_AVATAR_BYTES) throw new UserError("avatar image is larger than 4 MiB");
   const avatarUrl = await uploadAvatar(acct.http, acct.identity.server_url, bytes, ctx.rt.crypto);
-  await updateProfile(acct.http, acct.identity.slug, { avatar_url: avatarUrl });
-  return { json: { slug: acct.identity.slug, avatar_url: avatarUrl }, text: `avatar set to ${label} (${avatarUrl})` };
+  await saveProfile(acct, target.slug, { avatar_url: avatarUrl });
+  return { json: { slug: target.slug, avatar_url: avatarUrl }, text: `${target.whose}avatar set to ${label} (${avatarUrl})` };
 }
 
 export async function exportIdentity(ctx: Ctx, opts: { passphrase?: string; out?: string }) {

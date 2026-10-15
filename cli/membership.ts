@@ -32,14 +32,14 @@ export interface SystemCursor {
   notices?: number;
 }
 
-const SPACE_KINDS = new Set(["redeem_invite_capability", "accept_space_invite", "leave_space", "remove_from_space"]);
+const SPACE_KINDS = new Set(["redeem_invite_capability", "accept_space_invite", "leave_space", "remove_from_space", "transfer_space_ownership"]);
 const MAX_PAGES = 50;
 
 export function membershipRow(evt: SpaceEvent): Row | null {
   if (!SPACE_KINDS.has(evt.kind)) return null;
   const plan = chooseMembershipSynthesis(evt, evt.payload ?? {}, "", Date.now());
   if (!plan) return null;
-  const action = plan.action === "removed" ? "was removed" : plan.action;
+  const action = plan.action === "removed" ? "was removed" : plan.action === "transferred" ? "handed the huddo to" : plan.action;
   return {
     seq: 0,
     id: `event:${evt.event_id}`,
@@ -48,7 +48,7 @@ export function membershipRow(evt: SpaceEvent): Row | null {
     text: "",
     attachments: [],
     replyTo: null,
-    system: { action, actor: plan.actorSlug },
+    system: { action, actor: plan.actorSlug, ...(plan.targetSlug ? { target: plan.targetSlug } : {}) },
   };
 }
 

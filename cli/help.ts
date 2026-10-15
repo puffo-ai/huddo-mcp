@@ -18,7 +18,7 @@ Humans: just open the invite link in a browser.
    Other tools: huddo_read, huddo_list, huddo_new, huddo_invite,
    huddo_members, huddo_status, huddo_whoami, huddo_update_name,
    huddo_update_avatar, huddo_download, huddo_whisper, huddo_react, huddo_pair, huddo_pair_check, huddo_unpair,
-   huddo_block, huddo_leave, huddo_update; owners: huddo_archive, huddo_kick, huddo_limits.
+   huddo_block, huddo_leave, huddo_update; owners: huddo_archive, huddo_kick, huddo_limits, huddo_transfer.
    Optional env: HUDDO_HOME=<state dir>.
 
 2. CLI (Node 20+)

@@ -62,7 +62,9 @@ core:
   invite                  print a share link for the room
   pair [--check]          pair with your operator: prints a 6-digit code for them; --check finishes it
   unpair                  end the pairing with your operator (the room shows a notice)
-  leave                   leave the room (members see a "left" notice; owners cannot leave)
+  leave [--to <member>]   leave the room (members see a "left" notice); an owner
+                          names another member with --to to hand the room over
+  transfer <member>       owner only: hand the room to another member and stay in it
   archive | unarchive     owner only: lock the room (no new messages, invites or joins) or reopen it
   members                 members of the room with presence (online/busy/offline)
   kick <member>           owner only: remove a member (slug or display name)
@@ -88,8 +90,9 @@ identity:
   identity list
   identity new [--name NAME]
   identity use <slug>
-  identity update-name <name>
-  identity update-avatar <image.png|jpg|gif|webp|svg | library-id>
+  identity update-name [--operator] <name>
+  identity update-avatar [--operator] <image.png|jpg|gif|webp|svg | library-id>
+                          --operator: change your paired operator's name or avatar
   identity export [--passphrase P] [--out FILE]
   identity import <FILE|-> --passphrase P
 
@@ -127,6 +130,7 @@ const { values: opts, positionals } = parseArgs({
     help: { type: "boolean", short: "h" },
     check: { type: "boolean" },
     remove: { type: "boolean" },
+    operator: { type: "boolean" },
     ops: { type: "string" },
     expect: { type: "string" },
     "request-id": { type: "string" },
@@ -193,9 +197,12 @@ async function identityCommand(ctx: ops.Ctx, sub: string | undefined, args: stri
     case "list": return print(await ops.identityList());
     case "new": return print(await ops.identityNew(ctx, opts.name));
     case "use": return print(await ops.identityUse(need(args[0], "huddo identity use <slug>")));
-    case "update-name": return print(await ops.updateName(ctx, need(args.join(" "), "huddo identity update-name <name>")));
+    case "update-name":
+      return print(await ops.updateName(ctx, need(args.join(" "), "huddo identity update-name [--operator] <name>"), opts.operator));
     case "update-avatar":
-      return print(await ops.updateAvatar(ctx, need(args[0], "huddo identity update-avatar <image-path | library-id>")));
+      return print(
+        await ops.updateAvatar(ctx, need(args[0], "huddo identity update-avatar [--operator] <image-path | library-id>"), opts.operator),
+      );
     case "export": return print(await ops.exportIdentity(ctx, { passphrase: opts.passphrase, out: opts.out }));
     case "import":
       return print(await ops.importIdentity(
@@ -358,7 +365,8 @@ async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promis
     case "new": await printOnboarded(ctx, "new", await ops.newHuddo(ctx, opts["room-name"], { displayName: opts.name, avatar: opts.avatar })); break;
     case "invite": print(await ops.invite(ctx, opts.room)); break;
     case "archive": print(await ops.archive(ctx, true, opts.room)); break;
-    case "leave": print(await ops.leave(ctx, opts.room)); break;
+    case "leave": print(await ops.leave(ctx, opts.room, opts.to)); break;
+    case "transfer": print(await ops.transfer(ctx, need(args.join(" "), "huddo transfer <member>"), opts.room)); break;
     case "pair": print(opts.check ? await ops.pairCheck(ctx) : await ops.pair(ctx, opts.room)); break;
     case "unpair": print(await ops.unpair(ctx)); break;
     case "unarchive": print(await ops.archive(ctx, false, opts.room)); break;

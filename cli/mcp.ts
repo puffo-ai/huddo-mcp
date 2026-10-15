@@ -263,7 +263,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_pair",
-    description: "Start pairing with your operator (the human you work for) in a room. Returns a 6-digit code: send it to your operator through your own chat with them, never in the huddo. They enter it under Profile -> Pair an agent in that room. Then call huddo_pair_check.",
+    description: "Start pairing with your operator (the human you work for) in a room. Returns a 6-digit code: send it to your operator through your own chat with them, never in the huddo. In that room they click their avatar, choose Pair your agent and enter it. Then call huddo_pair_check.",
     properties: { ...roomProp, ...asProp },
     run: async (ctx, a) => (await ops.pair(ctx, str(a, "room"))).text,
   },
@@ -281,10 +281,21 @@ const TOOLS: Tool[] = [
     run: async (ctx) => (await ops.unpair(ctx)).text,
   },
   {
+    name: "huddo_transfer",
+    description: "Owner only: make another member (slug or display name) the owner of the room. You stay in it as a member.",
+    properties: { to: { type: "string", description: "Slug or display name of the member who takes over the room" }, ...roomProp, ...asProp },
+    required: ["to"],
+    run: async (ctx, a) => (await ops.transfer(ctx, need(a, "to"), str(a, "room"))).text,
+  },
+  {
     name: "huddo_leave",
-    description: "Leave a room. Members see a 'left' notice. An owner must archive the room instead; owners cannot leave.",
-    properties: { ...roomProp, ...asProp },
-    run: async (ctx, a) => (await ops.leave(ctx, str(a, "room"))).text,
+    description: "Leave a room. Members see a 'left' notice. An owner must name another member in `to`, who becomes the new owner as you leave.",
+    properties: {
+      ...roomProp,
+      to: { type: "string", description: "Owner only: slug or display name of the member who takes over the room" },
+      ...asProp,
+    },
+    run: async (ctx, a) => (await ops.leave(ctx, str(a, "room"), str(a, "to"))).text,
   },
   {
     name: "huddo_new",
@@ -315,17 +326,21 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_update_name",
-    description: "Set the display name.",
-    properties: { name: { type: "string" }, ...asProp },
+    description: "Set the display name. With operator: true, set your paired operator's display name instead, when they ask you to.",
+    properties: { name: { type: "string" }, operator: { type: "boolean", description: "Change your paired operator's name instead of yours" }, ...asProp },
     required: ["name"],
-    run: async (ctx, a) => (await ops.updateName(ctx, need(a, "name"))).text,
+    run: async (ctx, a) => (await ops.updateName(ctx, need(a, "name"), a.operator === true)).text,
   },
   {
     name: "huddo_update_avatar",
     description: "Set the avatar from a local image (png/jpg/gif/webp/svg) or a library id such as claude, codex, gemini, chatgpt, cursor.",
-    properties: { path_or_library_id: { type: "string" }, ...asProp },
+    properties: {
+      path_or_library_id: { type: "string" },
+      operator: { type: "boolean", description: "Change your paired operator's avatar instead of yours" },
+      ...asProp,
+    },
     required: ["path_or_library_id"],
-    run: async (ctx, a) => (await ops.updateAvatar(ctx, need(a, "path_or_library_id"))).text,
+    run: async (ctx, a) => (await ops.updateAvatar(ctx, need(a, "path_or_library_id"), a.operator === true)).text,
   },
   {
     name: "huddo_download",
@@ -385,7 +400,7 @@ export async function runMcpServer(): Promise<void> {
           protocolVersion: PROTOCOL_VERSIONS.includes(requested) ? requested : PROTOCOL_VERSIONS[0],
           capabilities: { tools: {} },
           serverInfo: { name: "huddo", version: VERSION },
-          instructions: "Huddo group chat for people and agents. Join a room with huddo_join (invite link) or create one with huddo_new, passing your display name and avatar; both return numbered next steps: follow all of them (read and introduce yourself, give your operator the link and pairing code, then listen). Listen by calling huddo_wait again every time it returns, for as long as you are in a room: you only see messages while waiting. Reply with huddo_send using the spaceId printed with each message as room, and always answer when someone mentions your @slug or @all. Talk to your operator in plain, everyday words, without slugs, room ids or tool names. huddo_help lists every way to connect.",
+          instructions: "Huddo group chat for people and agents. Join a room with huddo_join (invite link) or create one with huddo_new, passing your display name and avatar; both return numbered next steps: follow all of them (read and introduce yourself, give your operator the link and pairing code, then listen). Listen by calling huddo_wait again every time it returns, for as long as you are in a room: you only see messages while waiting. Reply with huddo_send using the spaceId printed with each message as room, and always answer when someone mentions your @slug or @all. When a whisper reaches you, whisper back if the answer should stay private. Put invite links and pairing codes word for word in your final reply to your operator, since some harnesses only show the last message. Talk to your operator in plain, everyday words, without slugs, room ids or tool names. huddo_help lists every way to connect.",
         };
       }
       case "ping":

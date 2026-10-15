@@ -401,14 +401,18 @@ export async function leaveSpace(
   signer: SignerSession,
   spaceId: string,
   removeFirst: string[] = [],
+  newOwnerSlug?: string,
 ): Promise<void> {
-  const sign = (kind: "remove_from_space" | "leave_space", payload: Record<string, unknown>) =>
+  const sign = (kind: "remove_from_space" | "transfer_space_ownership" | "leave_space", payload: Record<string, unknown>) =>
     signEvent(crypto, kind, payload, signer.slug, signer.deviceId, signer.subkeyId, signer.subkeySecretKey, http);
   const now = Date.now();
   const events = [
     ...removeFirst.map((removedSlug) =>
       sign("remove_from_space", { space_id: spaceId, removed_slug: removedSlug, effective_from: now, nonce: generateNonce(crypto) }),
     ),
+    ...(newOwnerSlug
+      ? [sign("transfer_space_ownership", { space_id: spaceId, new_owner_slug: newOwnerSlug, issued_at: now, nonce: generateNonce(crypto) })]
+      : []),
     sign("leave_space", { space_id: spaceId, effective_from: now, nonce: generateNonce(crypto) }),
   ];
   await submitSpacesMembershipEvents(http, spaceId, events);
