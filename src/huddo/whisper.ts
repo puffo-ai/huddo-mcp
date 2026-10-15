@@ -114,6 +114,6 @@ export function leadingWhisperTarget(
 ): string | null {
   if (mentions.length !== 1) return null;
   const [only] = mentions;
-  if (only.slug === selfSlug) return null;
+  if (only.slug === selfSlug || only.slug === "all") return null;
   return text.slice(0, only.start).trim() === "" ? only.slug : null;
 }

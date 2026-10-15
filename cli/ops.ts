@@ -92,6 +92,24 @@ export interface MessageBatch {
   pairs?: Record<string, string>;
   self?: string;
   parents?: Record<string, Row>;
+  omitted?: number;
+}
+
+export const WAIT_MAX_MESSAGES = 200;
+
+export function capBatch(batch: MessageBatch, max = WAIT_MAX_MESSAGES): MessageBatch {
+  const total = batch.groups.reduce((n, g) => n + g.rows.length, 0);
+  if (total <= max) return batch;
+  const keep = new Set(
+    batch.groups
+      .flatMap((g) => g.rows)
+      .sort((a, b) => b.sentAt - a.sentAt || b.seq - a.seq)
+      .slice(0, max),
+  );
+  const groups = batch.groups
+    .map((g) => ({ ...g, rows: g.rows.filter((r) => keep.has(r)) }))
+    .filter((g) => g.rows.length);
+  return { ...batch, groups, omitted: (batch.omitted ?? 0) + total - max };
 }
 
 const PAIRS_SOFT_MS = 2_000;
@@ -322,9 +340,13 @@ export function messageJson(room: Room | null, row: Row, batch: MessageBatch) {
 
 export function formatBatch(batch: MessageBatch, withRoom: boolean): string {
   const pairs = batch.pairs ?? {};
-  return batch.groups
-    .flatMap((g) => g.rows.map((r) => formatRow(r, batch.names, withRoom ? `[${g.room.name} ${g.room.spaceId}] ` : "", operatorTag(r.sender, pairs, batch.self), batch.parents)))
-    .join("\n");
+  const lines = batch.groups.flatMap((g) =>
+    g.rows.map((r) => formatRow(r, batch.names, withRoom ? `[${g.room.name} ${g.room.spaceId}] ` : "", operatorTag(r.sender, pairs, batch.self), batch.parents)),
+  );
+  const note = batch.omitted
+    ? [`(${batch.omitted} earlier unread ${batch.omitted === 1 ? "message" : "messages"} skipped; showing the latest ${lines.length}. Read the room's history if you need them.)`]
+    : [];
+  return [...note, ...lines].join("\n");
 }
 
 export async function join(ctx: Ctx, invite: string, name?: string, avatar?: string) {
@@ -655,9 +677,9 @@ export async function wait(ctx: Ctx, opts: WaitOptions): Promise<MessageBatch> {
   const acct = account(ctx);
   if (opts.since === undefined && daemonEnabled() && acct.identity.slug === activeSlug()) {
     const viaDaemon = await waitViaDaemon(acct.identity.slug, opts);
-    if (viaDaemon) return withPairs(acct, viaDaemon);
+    if (viaDaemon) return withPairs(acct, capBatch(viaDaemon));
   }
-  return withPairs(acct, await waitDirect(ctx, opts));
+  return withPairs(acct, capBatch(await waitDirect(ctx, opts)));
 }
 
 export async function waitDirect(ctx: Ctx, opts: WaitOptions): Promise<MessageBatch> {

@@ -164,6 +164,7 @@ async function printOnboarded(
 
 function printBatch(batch: ops.MessageBatch, withRoom: boolean): void {
   if (opts.json) {
+    if (batch.omitted) process.stderr.write(`${JSON.stringify({ omitted: batch.omitted })}\n`);
     for (const g of batch.groups) {
       for (const r of g.rows) process.stdout.write(`${JSON.stringify(ops.messageJson(withRoom ? g.room : null, r, batch))}\n`);
     }

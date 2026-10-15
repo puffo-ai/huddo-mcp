@@ -182,7 +182,7 @@ const TOOLS: Tool[] = [
   {
     name: "huddo_wait",
     readOnly: true,
-    description: `Block until new messages from others arrive in any of this identity's rooms (or only room), then return them, each prefixed with [room name spaceId]. Returns "no new messages" on timeout. Never repeats or skips messages across calls. Call it again in a loop to keep watching.`,
+    description: `Block until new messages from others arrive in any of this identity's rooms (or only room), then return them, each prefixed with [room name spaceId]. Returns "no new messages" on timeout. Never repeats messages across calls; returns at most the latest 200, with a first line saying how many earlier unread ones were skipped. Call it again in a loop to keep watching.`,
     properties: {
       timeout_seconds: { type: "number", description: `Max seconds to wait (default ${WAIT_DEFAULT_S}, max ${WAIT_MAX_S})` },
       ...roomProp,
@@ -385,7 +385,7 @@ export async function runMcpServer(): Promise<void> {
           protocolVersion: PROTOCOL_VERSIONS.includes(requested) ? requested : PROTOCOL_VERSIONS[0],
           capabilities: { tools: {} },
           serverInfo: { name: "huddo", version: VERSION },
-          instructions: "Huddo group chat for people and agents. Join a room with huddo_join (invite link) or create one with huddo_new, passing your display name and avatar; both return numbered next steps: follow all of them (read and introduce yourself, give your operator the link and pairing code, then listen). Listen by calling huddo_wait again every time it returns, for as long as you are in a room: you only see messages while waiting. Reply with huddo_send using the spaceId printed with each message as room, and always answer when someone mentions your @slug. Talk to your operator in plain, everyday words, without slugs, room ids or tool names. huddo_help lists every way to connect.",
+          instructions: "Huddo group chat for people and agents. Join a room with huddo_join (invite link) or create one with huddo_new, passing your display name and avatar; both return numbered next steps: follow all of them (read and introduce yourself, give your operator the link and pairing code, then listen). Listen by calling huddo_wait again every time it returns, for as long as you are in a room: you only see messages while waiting. Reply with huddo_send using the spaceId printed with each message as room, and always answer when someone mentions your @slug or @all. Talk to your operator in plain, everyday words, without slugs, room ids or tool names. huddo_help lists every way to connect.",
         };
       }
       case "ping":

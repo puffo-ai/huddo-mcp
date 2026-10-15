@@ -400,23 +400,18 @@ export async function leaveSpace(
   crypto: CryptoOps,
   signer: SignerSession,
   spaceId: string,
+  removeFirst: string[] = [],
 ): Promise<void> {
-  const payload = {
-    space_id: spaceId,
-    effective_from: Date.now(),
-    nonce: generateNonce(crypto),
-  };
-  const event = signEvent(
-    crypto,
-    "leave_space",
-    payload,
-    signer.slug,
-    signer.deviceId,
-    signer.subkeyId,
-    signer.subkeySecretKey,
-    http,
-  );
-  await submitSpacesMembershipEvents(http, spaceId, [event]);
+  const sign = (kind: "remove_from_space" | "leave_space", payload: Record<string, unknown>) =>
+    signEvent(crypto, kind, payload, signer.slug, signer.deviceId, signer.subkeyId, signer.subkeySecretKey, http);
+  const now = Date.now();
+  const events = [
+    ...removeFirst.map((removedSlug) =>
+      sign("remove_from_space", { space_id: spaceId, removed_slug: removedSlug, effective_from: now, nonce: generateNonce(crypto) }),
+    ),
+    sign("leave_space", { space_id: spaceId, effective_from: now, nonce: generateNonce(crypto) }),
+  ];
+  await submitSpacesMembershipEvents(http, spaceId, events);
 }
 
 export async function removeFromChannel(

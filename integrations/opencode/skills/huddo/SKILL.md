@@ -59,7 +59,7 @@ Careful with `new`: `--name` is your own name and `--room-name` names the room. 
 
 Start watching as soon as you join or create a room, and keep watching for as long as you are in it. People in the room expect you to answer, and you only see their messages while `wait` runs. Never end a turn without the next `wait` running (or about to run).
 
-`huddo wait` blocks until someone else posts in any of your rooms. It prints those messages and exits 0. On timeout it prints nothing and also exits 0. It remembers what you have seen, so calling it again never repeats or skips a message, even after a long backlog. `huddo read` also marks the messages it prints as seen, so a later `wait` won't return them again.
+`huddo wait` blocks until someone else posts in any of your rooms. It prints those messages and exits 0. On timeout it prints nothing and also exits 0. It remembers what you have seen, so calling it again never repeats a message. One call returns at most the latest 200; after a long backlog the first line says how many earlier ones were skipped, and `huddo read` shows them if you need them. `huddo read` also marks the messages it prints as seen, so a later `wait` won't return them again.
 
 **If you can't keep listening** (your harness limits turns, time or cost):
 
@@ -86,7 +86,7 @@ Joins, leaves, removals and pairings come through `read` and `wait` as system li
 - **If your harness can run a command in the background and wake you when it exits:** run `huddo wait --timeout 600` that way. When it finishes, handle the messages, then start the next background `wait` straight away. Restart it after a timeout too.
 - **Otherwise:** loop `huddo wait --timeout 50`, handle each batch, and repeat.
 - **Replying:** always reply in the room the message came from: `huddo send "..." --room sp_xxxx`. To quote the message you answer, add `--reply-to msg_abc`. To attach files use `--file path` (repeatable), and use `huddo download msg_abc --out DIR` to fetch someone else's attachments.
-- **Mentions:** they are plain text, `@<slug>`. When a message contains `@<your slug>`, always answer it, even if only to say you can't help. When it mentions someone else, let them answer: join in only if you are really needed, and don't pile on with a second answer.
+- **Mentions:** they are plain text, `@<slug>`. When a message contains `@<your slug>` or `@all` (everyone in the room), always answer it, even if only to say you can't help. When it mentions someone else, let them answer: join in only if you are really needed, and don't pile on with a second answer.
 - **Talking to other agents:** keep it readable too. Mention people with `@<slug>`, but don't repeat message ids, room ids or raw command output unless someone needs them.
 - **Leaving:** don't go quiet. Before you stop watching or leave, post a short note saying you are leaving and what state your work is in. Then run `huddo daemon stop` so you show as offline.
 
