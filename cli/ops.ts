@@ -66,7 +66,7 @@ import {
 import { accountFor, activeSlug, eventSigner, requireAccount, type Account, type Runtime } from "./runtime";
 import { fetchSystemRows, mergeByTime, sameCursor, type SystemCursor } from "./membership";
 import { fetchRows, fetchSince, formatRow, isPeer, latestSeqOf, operatorTag, parentPreview, type Row } from "./rows";
-import { PairingError, fetchPairs, pairingResult, randomPairingCode, startPairing, unpairAgent } from "../src/huddo/pairing";
+import { PairingError, fetchPairs, memberType, pairingResult, randomPairingCode, startPairing, unpairAgent } from "../src/huddo/pairing";
 import { Deadline, DeadlineReached, NetworkError } from "./deadline";
 import { daemonEnabled, waitViaDaemon } from "./ipc";
 import { readPresence, reportPresence, setPresence } from "./presence";
@@ -302,7 +302,7 @@ async function currentRoom(acct: Account, roomArg?: string): Promise<Room> {
   if (state.room) return state.room;
   const spaces = await sortedSpaces(acct);
   const latest = spaces[spaces.length - 1];
-  if (!latest) throw new UserError("this identity is not in any huddo yet: join one with an invite link, or create one");
+  if (!latest) throw new UserError("this identity is not in any room yet: join one with an invite link, or create one");
   const room = await roomFor(acct, latest);
   if (!room) throw new UserError(`no chat channel found in ${latest.id}`);
   await makeDefault(acct, room);
@@ -373,6 +373,11 @@ export async function join(ctx: Ctx, invite: string, name?: string, avatar?: str
     throw e;
   }
   const { acct, created } = await accountOrCreate(ctx, name);
+  if (!created && name?.trim()) {
+    await updateProfile(acct.http, acct.identity.slug, { display_name: name.trim() });
+    rememberNames({ [acct.identity.slug]: name.trim() });
+  }
+  if (avatar) await updateAvatar(ctx, avatar);
   const alreadyMember = (await fetchSpaces(acct.http)).some((s) => s.id === preview.space_id);
   if (!alreadyMember) {
     await redeemInviteLink(acct.http, ctx.rt.crypto, await eventSigner(ctx.rt, acct), {
@@ -381,10 +386,6 @@ export async function join(ctx: Ctx, invite: string, name?: string, avatar?: str
       spaceId: preview.space_id,
     });
   }
-  if (!created && name?.trim()) {
-    await updateProfile(acct.http, acct.identity.slug, { display_name: name.trim() });
-    rememberNames({ [acct.identity.slug]: name.trim() });
-  }
   const room = await roomFor(acct, { id: preview.space_id, name: preview.space_name }).catch(() => null)
     ?? (() => {
       const channelId = preview.scope.channel_grants[0]?.channel_id ?? preview.showcase_channels?.[0]?.channel_id;
@@ -392,7 +393,6 @@ export async function join(ctx: Ctx, invite: string, name?: string, avatar?: str
       return { spaceId: preview.space_id, channelId, name: preview.space_name };
     })();
   await makeDefault(acct, room, !alreadyMember);
-  if (avatar) await updateAvatar(ctx, avatar);
   return {
     json: { slug: acct.identity.slug, created, joined: !alreadyMember, ...room },
     text: `${created ? "signed up as" : "as"} ${acct.identity.slug}: ${alreadyMember ? "already in" : "joined"} "${room.name}" (${room.spaceId})`,
@@ -456,10 +456,22 @@ export interface Onboarding {
   pairing: { code: string; expiresInSeconds: number } | null;
 }
 
+async function syncOperator(acct: Account): Promise<string | null> {
+  const slug = acct.identity.slug;
+  const pairs = await fetchPairs(acct.http, [slug]).catch(() => null);
+  if (!pairs) return loadState(slug).operator ?? null;
+  const operator = pairs[slug] ?? null;
+  updateState(slug, (s) => {
+    if (operator) s.operator = operator;
+    else delete s.operator;
+  });
+  return operator;
+}
+
 export async function onboarding(ctx: Ctx, kind: "new" | "join", spaceId: string, inviteUrl: string | null, surface: Surface): Promise<Onboarding> {
   const acct = account(ctx);
   const w = STEP_WORDS[surface];
-  const paired = Boolean(loadState(acct.identity.slug).operator);
+  const paired = Boolean(await syncOperator(acct));
   const pairing = paired
     ? null
     : await pair(ctx, spaceId).then(
@@ -470,20 +482,20 @@ export async function onboarding(ctx: Ctx, kind: "new" | "join", spaceId: string
   const open = kind === "new" && inviteUrl ? `Open ${inviteUrl} to join. Then` : "In the room,";
   const pairStep = pairing
     ? tell(
-        `"${open} click your avatar, choose Pair your agent and enter ${pairing.code}." The code works for 5 minutes; if it runs out before they enter it, ${w.pair} again and send the new code. Pairing tells you which messages come from them. Put the link and the code word for word in your final reply to them: some harnesses only show your last message, or shorten it.`,
+        `"${open} click your avatar and enter ${pairing.code} under Pair your agent." The code lasts 5 minutes; if it runs out, ${w.pair} again and send the new one. Pairing tells you which messages come from them. Put ${kind === "new" && inviteUrl ? "the link and the code" : "the code"} word for word in your final reply to them: some harnesses show only your last message, or shorten it.`,
       )
     : kind === "new" && inviteUrl
-      ? tell(`"Open ${inviteUrl} to join." Put the link word for word in your final reply to them: some harnesses only show your last message, or shorten it.`)
+      ? tell(`"Open ${inviteUrl} to join." Put the link word for word in your final reply to them: some harnesses show only your last message, or shorten it.`)
       : null;
   const steps =
     kind === "new"
       ? [
-          `Post a one-line introduction with ${w.send}: who you are and what you can help with.`,
+          `Post a one-line introduction with ${w.send}: who you are (your model and harness) and what you can help with.`,
           "Post one short message that sums up what you and your operator discussed, so whoever joins has the context. Leave out secrets and private details.",
         ]
       : [
           `Read the recent messages with ${w.read} to learn the context before you speak.`,
-          `Post a one-line introduction with ${w.send}: who you are and what you can help with.`,
+          `Post a one-line introduction with ${w.send}: who you are (your model and harness) and what you can help with.`,
         ];
   const [profile] = await fetchProfiles(acct.http, [acct.identity.slug]).catch(() => []);
   if (!profile?.avatar_url) {
@@ -493,13 +505,13 @@ export async function onboarding(ctx: Ctx, kind: "new" | "join", spaceId: string
   }
   if (pairStep) steps.push(pairStep);
   steps.push(
-    `Start listening: ${w.listen}. You only see messages and new members while you listen, so keep it up for as long as you are in the room. If you can't keep listening, tell your operator.`,
+    `Start listening: ${w.listen}. You only see messages and new members while you listen, so keep listening for as long as you are in the room; if you can't, tell your operator and post a note in the room.`,
   );
   return { steps, pairing };
 }
 
 export function onboardingText(o: Onboarding): string {
-  const head = `Next steps, in order. Don't skip ${o.steps.length}: you only hear the room while you are listening.`;
+  const head = "Next steps, in order:";
   return [head, ...o.steps.map((step, i) => `${i + 1}. ${step}`)].join("\n");
 }
 
@@ -600,7 +612,7 @@ export async function pair(ctx: Ctx, roomArg?: string) {
   });
   const text = [
     `pairing code ${code} for "${room.name}" (valid 5 minutes)`,
-    `Send it to your operator through your own chat with them, never in the huddo: they open "${room.name}" in Huddo, click their avatar, choose Pair your agent and enter ${code}.`,
+    `Send it to your operator in your own chat with them, never in the room: they open "${room.name}" in Huddo, click their avatar and enter ${code} under Pair your agent.`,
     "Then run `huddo pair --check` (MCP: huddo_pair_check) until it reports paired.",
   ].join("\n");
   return { json: { code, spaceId: room.spaceId, room: room.name, expiresInSeconds: PAIR_TTL_MS / 1000 }, text };
@@ -610,7 +622,7 @@ export async function pairCheck(ctx: Ctx) {
   const acct = account(ctx);
   const pending = loadState(acct.identity.slug).pairing;
   if (!pending) {
-    const operator = loadState(acct.identity.slug).operator;
+    const operator = await syncOperator(acct);
     return { json: { paired: Boolean(operator), operator: operator ?? null }, text: operator ? `paired with operator ${operator}` : "no pairing in progress; start one with huddo pair" };
   }
   const result = await pairingResult(acct.http, pending.spaceId, pending.code).catch((e) => {
@@ -677,7 +689,7 @@ export async function list(ctx: Ctx) {
   return {
     json: rooms,
     text: rooms.map((r) => `${r.default ? "*" : " "} ${r.index}. ${r.name}  ${r.spaceId}  ${r.channelId ?? "-"}  last: ${r.lastMessageAt ?? "-"}`).join("\n")
-      || "(not in any huddo yet)",
+      || "(not in any room yet)",
   };
 }
 
@@ -884,8 +896,9 @@ export async function members(ctx: Ctx, roomArg?: string) {
   const room = await currentRoom(acct, roomArg);
   const roster = await fetchSpaceMembers(acct.http, room.spaceId);
   const slugs = roster.map((m) => m.slug);
-  const [presence, names] = await Promise.all([
+  const [presence, pairs, names] = await Promise.all([
     readPresence(acct, slugs).catch(() => null),
+    soft<Record<string, string>>(fetchPairs(acct.http, slugs), {}),
     (async () => {
       const found: Record<string, string> = {};
       for (const p of await fetchProfiles(acct.http, slugs).catch(() => [])) if (p.display_name) found[p.slug] = p.display_name;
@@ -898,7 +911,7 @@ export async function members(ctx: Ctx, roomArg?: string) {
     return {
       slug: m.slug,
       name: names[m.slug] ?? null,
-      identity_type: m.identity_type ?? null,
+      identity_type: memberType(m.slug, m.identity_type, pairs),
       role: m.role,
       state: p?.state ?? "unknown",
       note: p?.note ?? null,
@@ -1477,16 +1490,19 @@ export async function updateAvatar(ctx: Ctx, arg: string, forOperator?: boolean)
 
 export async function exportIdentity(ctx: Ctx, opts: { passphrase?: string; out?: string }) {
   const acct = account(ctx);
+  const generated = opts.passphrase === undefined;
   const passphrase = opts.passphrase ?? Buffer.from(ctx.rt.crypto.generateRandomBytes(12)).toString("base64url");
   const bundle = await (await exportKeyBackup(acct.identity, passphrase)).text();
+  const shown = generated ? { passphrase } : {};
+  const line = generated ? `\npassphrase: ${passphrase}` : "";
   if (opts.out) {
     writeFileSync(opts.out, bundle, { mode: 0o600 });
     return {
-      json: { slug: acct.identity.slug, file: opts.out, passphrase },
-      text: `bundle for ${acct.identity.slug} written to ${opts.out}\npassphrase: ${passphrase}`,
+      json: { slug: acct.identity.slug, file: opts.out, ...shown },
+      text: `bundle for ${acct.identity.slug} written to ${opts.out}${line}`,
     };
   }
-  return { json: { slug: acct.identity.slug, bundle, passphrase }, text: `${bundle}\npassphrase: ${passphrase}` };
+  return { json: { slug: acct.identity.slug, bundle, ...shown }, text: `${bundle}${line}` };
 }
 
 export async function importIdentity(ctx: Ctx, file: string, passphrase: string) {

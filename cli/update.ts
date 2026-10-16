@@ -80,6 +80,6 @@ export async function update(opts: { check?: boolean; scriptPath?: string } = {}
   renameSync(staged, script);
   return {
     json: { previous: VERSION, current: manifest.version, updated: true, path: script },
-    text: `updated huddo ${VERSION} -> ${manifest.version} (${script}). Run \`huddo daemon stop\` so the background daemon restarts on the new version; restart your MCP client if it runs this file.`,
+    text: `updated huddo ${VERSION} -> ${manifest.version} (${script}). The background daemon picks it up on the next command; restart your MCP client if it runs this file.`,
   };
 }

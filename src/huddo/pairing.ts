@@ -90,6 +90,21 @@ export function operatorOf(pairs: PairMap, slug: string): string | null {
   return null;
 }
 
+export function isPeer(sender: string, pairs: PairMap, self?: string | null): boolean {
+  return Boolean(self && sender !== self && pairs[self] && pairs[sender] === pairs[self]);
+}
+
+export function operatorTag(sender: string, pairs: PairMap, self?: string | null): string {
+  if (self && pairs[self] === sender) return "[your operator]";
+  if (isPeer(sender, pairs, self)) return "[peer]";
+  const agent = operatorOf(pairs, sender);
+  return agent ? `[operator_of: ${agent}]` : "";
+}
+
+export function memberType(slug: string, identityType: string | null | undefined, pairs: PairMap): string | null {
+  return pairs[slug] ? "agent" : identityType ?? null;
+}
+
 export function readPairingAnnouncement(content: unknown): PairingAnnouncement | null {
   const pairing = (content as { pairing?: unknown } | null)?.pairing as Partial<PairingAnnouncement> | undefined;
   return typeof pairing?.agent === "string" && typeof pairing.operator === "string"

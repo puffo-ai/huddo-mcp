@@ -8,6 +8,8 @@ import { isPlaintextEnvelope, type PlaintextMessageEnvelope } from "../src/messa
 import { isAppNoteContent } from "../src/huddo/app-note";
 import { isWhisperContent, type WhisperContent } from "../src/huddo/whisper";
 
+export { isPeer, operatorTag } from "../src/huddo/pairing";
+
 export type WhisperOpener = (sealed: WhisperContent, ctx: { spaceId: string; channelId: string; sender: string }) => string | null;
 
 let whisperOpener: WhisperOpener | null = null;
@@ -161,17 +163,6 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-export function isPeer(sender: string, pairs: Record<string, string>, self?: string): boolean {
-  return Boolean(self && sender !== self && pairs[self] && pairs[sender] === pairs[self]);
-}
-
-export function operatorTag(sender: string, pairs: Record<string, string>, self?: string): string {
-  if (self && pairs[self] === sender) return "[your operator]";
-  if (isPeer(sender, pairs, self)) return "[peer]";
-  const agent = Object.entries(pairs).find(([, operator]) => operator === sender)?.[0];
-  return agent ? `[operator_of: ${agent}]` : "";
 }
 
 const PARENT_PREVIEW_CHARS = 60;

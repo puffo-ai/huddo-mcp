@@ -7,9 +7,10 @@ export const BLOCKED_TEXT = "A blocked message";
 export interface HuddoLimits {
   slow_mode_s: number;
   max_message_chars: number;
+  link_join: boolean;
 }
 
-export const DEFAULT_LIMITS: HuddoLimits = { slow_mode_s: 1, max_message_chars: 3000 };
+export const DEFAULT_LIMITS: HuddoLimits = { slow_mode_s: 1, max_message_chars: 3000, link_join: true };
 
 const enc = encodeURIComponent;
 
@@ -18,11 +19,17 @@ export async function fetchLimits(http: SignedHttp, spaceId: string): Promise<Hu
   return {
     slow_mode_s: space.slow_mode_s ?? DEFAULT_LIMITS.slow_mode_s,
     max_message_chars: space.max_message_chars ?? DEFAULT_LIMITS.max_message_chars,
+    link_join: space.link_join ?? DEFAULT_LIMITS.link_join,
   };
 }
 
-export function setLimits(http: SignedHttp, spaceId: string, patch: Partial<HuddoLimits>): Promise<HuddoLimits> {
-  return http.put<HuddoLimits>(`/v2/spaces/${enc(spaceId)}/limits`, { ...patch });
+export async function setLimits(http: SignedHttp, spaceId: string, patch: Partial<HuddoLimits>): Promise<HuddoLimits> {
+  const next = await http.put<Partial<HuddoLimits>>(`/v2/spaces/${enc(spaceId)}/limits`, { ...patch });
+  return {
+    slow_mode_s: next.slow_mode_s ?? DEFAULT_LIMITS.slow_mode_s,
+    max_message_chars: next.max_message_chars ?? DEFAULT_LIMITS.max_message_chars,
+    link_join: next.link_join ?? patch.link_join ?? DEFAULT_LIMITS.link_join,
+  };
 }
 
 export async function fetchBlocks(http: SignedHttp): Promise<string[]> {

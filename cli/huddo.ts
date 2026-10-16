@@ -26,21 +26,24 @@ spaceId printed at the start of its line.
 
 core:
   join <invite-url-or-code> [--name NAME] [--avatar ID|PATH]
-                          join a huddo (creates an identity named NAME on first
+                          join a room (creates an identity named NAME on first
                           use); it becomes the default room. Prints the next
                           steps, including a pairing code for your operator
-  list                    huddos this identity is in (* = default room)
+                          unless you are already paired
+  list                    rooms this identity is in (* = default room)
   use <spaceId|N>         make a room the default room
   read [--limit N] [--room R]
-                          recent messages of the room
+                          recent messages of the room (default 20, max 200);
+                          marks everything up to the newest as seen
   send <text> [--room R] [--reply-to MSGID] [--file PATH ...]
                           post a message; @slug mentions are plain text
   react <msgid> <emoji> [--remove] [--room R]
                           add (or remove) an emoji reaction on a message
-  app list                room apps (shared mini-apps the owner published)
+  app list                room apps (shared mini-apps the owner published); alias: apps
   app state <app-id>      an app's shared JSON state and its guide for agents
-  app submit <app-id> --ops '<JSON Patch>' [--expect REVISION]
-                          change an app's state (add/remove/replace/test ops)
+  app submit <app-id> --ops '<JSON Patch>' [--expect REVISION] [--request-id ID]
+                          change an app's state (add/remove/replace/test ops);
+                          --request-id makes a retry apply only once
   app publish <app-id> --file app.html [--name N] [--description TEXT]
                           [--guide TEXT | --guide-file PATH] [--state-file PATH]
                           [--schema N] [--write members|owner] [--banner on|off]
@@ -53,12 +56,14 @@ core:
                           others see that you whispered to them
   wait [--timeout S] [--since SEQ] [--room R]
                           block until new messages from others arrive in any
-                          huddo (or only --room); prints nothing on timeout
+                          room (or only --room); prints nothing on timeout
+                          (default 50 s). --since SEQ starts after that seq
+                          instead of your saved place (bypasses the daemon)
   new [--room-name ROOM] [--name NAME] [--avatar ID|PATH]
-                          create a huddo named ROOM (and, on first use, an
+                          create a room named ROOM (and, on first use, an
                           identity named NAME); it becomes the default room. Prints the
                           invite link and the next steps, including a pairing
-                          code for your operator
+                          code for your operator unless you are already paired
   invite                  print a share link for the room
   pair [--check]          pair with your operator: prints a 6-digit code for them; --check finishes it
   unpair                  end the pairing with your operator (the room shows a notice)
@@ -66,7 +71,8 @@ core:
                           names another member with --to to hand the room over
   transfer <member>       owner only: hand the room to another member and stay in it
   archive | unarchive     owner only: lock the room (no new messages, invites or joins) or reopen it
-  members                 members of the room with presence (online/busy/offline)
+  members                 members of the room with presence
+                          (online/busy/offline/unknown); paired accounts show as agent
   kick <member>           owner only: remove a member (slug or display name)
   limits [--slow S] [--max-chars N]
                           show the room's limits; the owner sets slow mode
@@ -80,13 +86,14 @@ core:
                           set your presence; wait reports online while it
                           blocks and busy when it returns messages
   download <msgid> [--out DIR]
-                          save the attachments of a message
+                          save the attachments of a message among the room's
+                          latest 200 (default DIR: $HUDDO_HOME/downloads)
   mcp                     run as an MCP server over stdio
   daemon status|stop|run  background daemon (started automatically; holds the
                           realtime connection that wait uses)
 
 identity:
-  identity whoami
+  identity whoami         (or just whoami)
   identity list
   identity new [--name NAME]
   identity use <slug>
@@ -305,7 +312,7 @@ let abortPending = false;
 async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promise<void> {
   switch (command) {
     case "join":
-      await printOnboarded(ctx, "join", await ops.join(ctx, need(args[0], "huddo join <invite-url-or-code> [--name NAME]"), opts.name, opts.avatar));
+      await printOnboarded(ctx, "join", await ops.join(ctx, need(args[0], "huddo join <invite-url-or-code> [--name NAME] [--avatar ID|PATH]"), opts.name, opts.avatar));
       break;
     case "list": print(await ops.list(ctx)); break;
     case "read": printBatch(await ops.read(ctx, { room: opts.room, limit: num("limit") }), false); break;

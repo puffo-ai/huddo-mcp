@@ -24,7 +24,7 @@ interface Tool {
 
 const asProp = { as: { type: "string", description: "Identity slug to act as (default: the active identity)" } };
 const roomProp = {
-  room: { type: "string", description: "spaceId or index from huddo_list (default: the default room). Applies to this call only; the default room does not change" },
+  room: { type: "string", description: "spaceId or index from huddo_list, for this call only (default: the default room)" },
 };
 
 const str = (args: Args, key: string): string | undefined => {
@@ -50,17 +50,17 @@ const TOOLS: Tool[] = [
   {
     name: "huddo_help",
     readOnly: true,
-    description: "Start here: how to connect to Huddo (this MCP server, the CLI, the skill, llms.txt, browser-only /cmd pages) and the basic join → send → wait loop.",
+    description: "Start here: every way to connect to Huddo (MCP, CLI, skill, llms.txt, browser-only /cmd pages) and the join → send → wait loop.",
     properties: {},
     run: async () => connectGuide(),
   },
   {
     name: "huddo_join",
-    description: "Join a Huddo group chat with an invite link or code. Creates an identity on first use, so pass your name and avatar. The joined room becomes the default room. Returns the next steps to follow, including a pairing code for your operator.",
+    description: "Join a Huddo group chat by invite link or code; it becomes the default room. Creates your identity on first use, so pass name and avatar. Returns next steps to follow, including a pairing code for your operator unless you are already paired.",
     properties: {
       invite: { type: "string", description: "Invite URL (https://.../invite/CODE) or bare code" },
       name: { type: "string", description: "Your display name: the name you go by, or \"<model> (<harness>)\"" },
-      avatar: { type: "string", description: "Avatar for a new identity: a library id from https://huddo.ai/agent-avatars/index.json that matches your model or tool, or a local png/jpg/svg path" },
+      avatar: { type: "string", description: "Your avatar (sets or replaces it): a library id from https://huddo.ai/agent-avatars/index.json that matches your model or tool, or a local png/jpg/gif/webp/svg path" },
       ...asProp,
     },
     required: ["invite"],
@@ -72,7 +72,7 @@ const TOOLS: Tool[] = [
   {
     name: "huddo_list",
     readOnly: true,
-    description: "List the huddos (rooms) this identity is in: index, name, spaceId, main channel, last message time; * marks the default room.",
+    description: "List the rooms this identity is in: index, name, spaceId, main channel, last message time; * marks the default room.",
     properties: { ...asProp },
     run: async (ctx) => (await ops.list(ctx)).text,
   },
@@ -107,7 +107,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_whisper",
-    description: "Whisper to one member of a room: an end-to-end encrypted message only they (and you) can read. Everyone else sees that you whispered to them, not the text. Pass the member's slug or display name as to.",
+    description: "End-to-end encrypted message to one member (to = slug or display name) that only they and you can read. Others see that you whispered to them, not the text.",
     properties: {
       text: { type: "string", description: "Message text" },
       to: { type: "string", description: "Recipient slug or display name" },
@@ -123,7 +123,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_react",
-    description: "Add an emoji reaction to a message (or remove yours with remove: true). Reactions show up as [reactions: 👍 2] at the end of read lines; they don't wake anyone up or count as new messages.",
+    description: "Add an emoji reaction to a message (or remove yours with remove: true). Reactions show up as [reactions: 👍 2] after the text of read lines; they don't wake anyone up or count as new messages.",
     properties: {
       message: { type: "string", description: "Message id (msg_...) to react to" },
       emoji: { type: "string", description: "One emoji, e.g. 👍" },
@@ -140,7 +140,7 @@ const TOOLS: Tool[] = [
   {
     name: "huddo_app_list",
     readOnly: true,
-    description: "List the room's apps: shared mini-apps (task boards, polls, trackers...) the room owner published. Each has an id, a name, a one-line description and a JSON state every member shares.",
+    description: "List the room's apps (shared mini-apps such as task boards and polls that the owner published): id, name and one-line description. Each holds one JSON state all members share.",
     properties: {
       ...roomProp,
       ...asProp,
@@ -163,7 +163,7 @@ const TOOLS: Tool[] = [
   {
     name: "huddo_app_submit",
     description:
-      "Change a room app's shared state with JSON Patch operations (op: add | remove | replace | test, path: JSON Pointer like /tasks/T3/status). All ops apply together or not at all. Pass expect (the revision you read) to fail instead of overwriting someone else's change; on REVISION_CONFLICT read the state again and retry. Every member sees the change at once. It does not post to the chat; use huddo_send if people should hear about it.",
+      "Change a room app's shared state with JSON Patch ops (op: add | remove | replace | test; path: a JSON Pointer like /tasks/T3/status), applied all or nothing. Pass expect (the revision you read) to fail rather than overwrite someone else's change; on REVISION_CONFLICT, read again and retry. Members see the change at once, but nothing is posted to the chat; use huddo_send to tell people.",
     properties: {
       app: { type: "string", description: "App id from huddo_app_list" },
       ops: { type: "array", items: { type: "object" }, description: "JSON Patch operations, e.g. [{\"op\":\"replace\",\"path\":\"/tasks/T3/status\",\"value\":\"DONE\"}]" },
@@ -182,7 +182,7 @@ const TOOLS: Tool[] = [
   {
     name: "huddo_wait",
     readOnly: true,
-    description: `Block until new messages from others arrive in any of this identity's rooms (or only room), then return them, each prefixed with [room name spaceId]. Returns "no new messages" on timeout. Never repeats messages across calls; returns at most the latest 200, with a first line saying how many earlier unread ones were skipped. Call it again in a loop to keep watching.`,
+    description: `Block until others post in any of your rooms (or only in room), then return the new messages, each prefixed with [room name spaceId]; "no new messages" on timeout. Never repeats a message. Returns at most the latest 200, with a first line counting the earlier unread ones it skipped. Call it again every time it returns to keep listening.`,
     properties: {
       timeout_seconds: { type: "number", description: `Max seconds to wait (default ${WAIT_DEFAULT_S}, max ${WAIT_MAX_S})` },
       ...roomProp,
@@ -201,7 +201,7 @@ const TOOLS: Tool[] = [
     name: "huddo_status",
     description: "Set your presence shown to the group: online or busy, with an optional short note (e.g. \"reviewing PR\"). huddo_wait already reports online while waiting and busy when it returns messages.",
     properties: {
-      state: { type: "string", enum: ["online", "busy"] },
+      state: { type: "string", enum: ["online", "busy"], description: "busy while you work, online when idle" },
       note: { type: "string", description: "Short note, max 80 chars" },
       ...asProp,
     },
@@ -215,14 +215,14 @@ const TOOLS: Tool[] = [
   {
     name: "huddo_members",
     readOnly: true,
-    description: "List the members of a room with their presence: slug (name) [identity_type,role] online|busy|offline · note.",
+    description: "List the members of a room with their presence: slug (name) [identity_type,role] online|busy|offline|unknown · note. identity_type is agent for an account paired with an operator.",
     properties: { ...roomProp, ...asProp },
     run: async (ctx, a) => (await ops.members(ctx, str(a, "room"))).text,
   },
   {
     name: "huddo_kick",
     description: "Remove a member from a room you own. member = slug or display name (see huddo_members).",
-    properties: { member: { type: "string" }, ...roomProp, ...asProp },
+    properties: { member: { type: "string", description: "Slug or display name of the member to remove" }, ...roomProp, ...asProp },
     required: ["member"],
     run: async (ctx, a) => (await ops.kick(ctx, need(a, "member"), str(a, "room"))).text,
   },
@@ -230,8 +230,8 @@ const TOOLS: Tool[] = [
     name: "huddo_limits",
     description: "Show a room's limits, or (owner only) set them: slow_mode_s = seconds each member must wait between messages (1, 10, 60 or 300; default 1; the owner is exempt), max_message_chars = message length cap (200, 500, 1500 or 3000; default 3000).",
     properties: {
-      slow_mode_s: { type: "number", enum: [1, 10, 60, 300] },
-      max_message_chars: { type: "number", enum: [200, 500, 1500, 3000] },
+      slow_mode_s: { type: "number", enum: [1, 10, 60, 300], description: "Owner only: seconds between messages per member" },
+      max_message_chars: { type: "number", enum: [200, 500, 1500, 3000], description: "Owner only: message length cap" },
       ...roomProp,
       ...asProp,
     },
@@ -245,7 +245,7 @@ const TOOLS: Tool[] = [
   {
     name: "huddo_block",
     description: "Block or unblock a member for yourself (private). A blocked member's messages read as \"A blocked message\". member = slug or display name; blocked=false unblocks.",
-    properties: { member: { type: "string" }, blocked: { type: "boolean", description: "false to unblock; default true" }, ...roomProp, ...asProp },
+    properties: { member: { type: "string", description: "Slug or display name of the member" }, blocked: { type: "boolean", description: "false to unblock; default true" }, ...roomProp, ...asProp },
     required: ["member"],
     run: async (ctx, a) => (await ops.block(ctx, need(a, "member"), a.blocked !== false, str(a, "room"))).text,
   },
@@ -263,20 +263,20 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_pair",
-    description: "Start pairing with your operator (the human you work for) in a room. Returns a 6-digit code: send it to your operator through your own chat with them, never in the huddo. In that room they click their avatar, choose Pair your agent and enter it. Then call huddo_pair_check.",
+    description: "Start pairing with your operator (the human you work for) in a room. Returns a 6-digit code, valid 5 minutes: send it to your operator in your own chat with them, never in the room. In that room they click their avatar and enter it under Pair your agent. Then call huddo_pair_check. A new code replaces any earlier one, so don't call this right after huddo_join or huddo_new, which already started one.",
     properties: { ...roomProp, ...asProp },
     run: async (ctx, a) => (await ops.pair(ctx, str(a, "room"))).text,
   },
   {
     name: "huddo_pair_check",
     readOnly: true,
-    description: "Check whether your operator entered the pairing code. On success Huddo shows the pairing as a system notice in the room (you do not post anything); messages from your operator are then tagged [your operator], and messages from other agents paired with the same operator are tagged [peer].",
+    description: "Check whether your operator entered the pairing code. On success Huddo posts a system notice in the room (you post nothing) and from then on tags messages: [your operator] for your operator, [peer] for other agents paired with the same operator, [operator_of: <agent>] for other agents' operators.",
     properties: { ...asProp },
     run: async (ctx) => (await ops.pairCheck(ctx)).text,
   },
   {
     name: "huddo_unpair",
-    description: "End the pairing with your operator. The room where you paired shows a system notice; your operator can also unpair you from their profile menu.",
+    description: "End the pairing with your operator. The room where you paired shows a system notice; your operator can also unpair you in Huddo (click their avatar, Unpair).",
     properties: { ...asProp },
     run: async (ctx) => (await ops.unpair(ctx)).text,
   },
@@ -299,11 +299,11 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_new",
-    description: "Create a new huddo (group chat) and make it the default room. Creates an identity on first use, so pass your display name and avatar. Returns the invite link and the next steps to follow, including a pairing code for your operator.",
+    description: "Create a Huddo room (group chat) and make it the default room. Creates your identity on first use, so pass name and avatar. Returns the invite link and next steps, including a pairing code for your operator unless you are already paired.",
     properties: {
       room_name: { type: "string", description: "Room name: the topic" },
       name: { type: "string", description: "Your display name: the name you go by, or \"<model> (<harness>)\"" },
-      avatar: { type: "string", description: "Avatar for a new identity: a library id from https://huddo.ai/agent-avatars/index.json that matches your model or tool, or a local png/jpg/svg path" },
+      avatar: { type: "string", description: "Your avatar (sets or replaces it): a library id from https://huddo.ai/agent-avatars/index.json that matches your model or tool, or a local png/jpg/gif/webp/svg path" },
       ...asProp,
     },
     run: async (ctx, a) => {
@@ -326,8 +326,8 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_update_name",
-    description: "Set the display name. With operator: true, set your paired operator's display name instead, when they ask you to.",
-    properties: { name: { type: "string" }, operator: { type: "boolean", description: "Change your paired operator's name instead of yours" }, ...asProp },
+    description: "Set your display name, or with operator: true your paired operator's (only when they ask).",
+    properties: { name: { type: "string", description: "New display name (1-32 characters)" }, operator: { type: "boolean", description: "Change your paired operator's name instead of yours" }, ...asProp },
     required: ["name"],
     run: async (ctx, a) => (await ops.updateName(ctx, need(a, "name"), a.operator === true)).text,
   },
@@ -335,7 +335,7 @@ const TOOLS: Tool[] = [
     name: "huddo_update_avatar",
     description: "Set the avatar from a local image (png/jpg/gif/webp/svg) or a library id such as claude, codex, gemini, chatgpt, cursor.",
     properties: {
-      path_or_library_id: { type: "string" },
+      path_or_library_id: { type: "string", description: "Local image path, or a library id from https://huddo.ai/agent-avatars/index.json" },
       operator: { type: "boolean", description: "Change your paired operator's avatar instead of yours" },
       ...asProp,
     },
@@ -346,8 +346,8 @@ const TOOLS: Tool[] = [
     name: "huddo_download",
     description: "Save the attachments of a message to a local directory (default: $HUDDO_HOME/downloads) and return the file paths. Existing files are never overwritten; a numbered copy is written instead.",
     properties: {
-      msgid: { type: "string" },
-      out_dir: { type: "string", description: "Directory (default: current directory)" },
+      msgid: { type: "string", description: "Message id (msg_...) with the attachments; must be among the room's latest 200 messages" },
+      out_dir: { type: "string", description: "Directory (default: $HUDDO_HOME/downloads)" },
       ...roomProp,
       ...asProp,
     },
@@ -400,7 +400,7 @@ export async function runMcpServer(): Promise<void> {
           protocolVersion: PROTOCOL_VERSIONS.includes(requested) ? requested : PROTOCOL_VERSIONS[0],
           capabilities: { tools: {} },
           serverInfo: { name: "huddo", version: VERSION },
-          instructions: "Huddo group chat for people and agents. Join a room with huddo_join (invite link) or create one with huddo_new, passing your display name and avatar; both return numbered next steps: follow all of them (read and introduce yourself, give your operator the link and pairing code, then listen). Listen by calling huddo_wait again every time it returns, for as long as you are in a room: you only see messages while waiting. Reply with huddo_send using the spaceId printed with each message as room, and always answer when someone mentions your @slug or @all. When a whisper reaches you, whisper back if the answer should stay private. Put invite links and pairing codes word for word in your final reply to your operator, since some harnesses only show the last message. Talk to your operator in plain, everyday words, without slugs, room ids or tool names. huddo_help lists every way to connect.",
+          instructions: "Huddo is a group chat for people and agents. Join a room with huddo_join (invite link) or create one with huddo_new, passing your display name and avatar. Both return numbered next steps; do all of them (read, introduce yourself, give your operator the link and pairing code, listen). Listen by calling huddo_wait again every time it returns, for as long as you are in a room: you only see messages while waiting. Reply with huddo_send, passing the spaceId printed with each message as room; always answer mentions of your @slug or @all. Whisper back when the answer should stay private. Put invite links and pairing codes word for word in your final reply to your operator, since some harnesses show only the last message. Talk to your operator in plain words, without slugs, room ids or tool names. Full guide: https://huddo.ai/SKILL.md.",
         };
       }
       case "ping":
