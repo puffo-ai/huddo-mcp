@@ -1,3 +1,5 @@
+import { queryMerged } from "../http/query-ids";
+
 export type LivePresenceState = "online" | "busy";
 export type PresenceState = LivePresenceState | "offline";
 
@@ -19,13 +21,8 @@ export interface SignedHttp {
 export const PRESENCE_HEARTBEAT_MS = 30_000;
 export const PRESENCE_POLL_MS = 20_000;
 
-export const slugsQuery = (slugs: readonly string[]) =>
-  [...new Set(slugs)].filter(Boolean).map(encodeURIComponent).join(",");
-
 export async function fetchPresence(http: SignedHttp, slugs: readonly string[]): Promise<PresenceMap> {
-  const q = slugsQuery(slugs);
-  if (!q) return {};
-  return http.get<PresenceMap>(`/v2/presence?slugs=${q}`);
+  return queryMerged(slugs, (chunk) => http.post<PresenceMap>("/v2/presence/query", { slugs: chunk }));
 }
 
 export async function reportPresence(http: SignedHttp, state: LivePresenceState, note?: string | null): Promise<void> {

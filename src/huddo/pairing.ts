@@ -1,5 +1,6 @@
 import { HttpError } from "../http/types";
-import { slugsQuery, type SignedHttp } from "./presence";
+import { queryMerged } from "../http/query-ids";
+import type { SignedHttp } from "./presence";
 
 export type PairMap = Record<string, string>;
 
@@ -76,13 +77,13 @@ export function unpairAgent(http: SignedHttp, agent: string) {
 }
 
 export async function fetchPairs(http: SignedHttp, slugs: readonly string[]): Promise<PairMap> {
-  const q = slugsQuery(slugs);
-  return q ? call(() => http.get<PairMap>(`/v2/pairings?slugs=${q}`)) : {};
+  return queryMerged(slugs, (chunk) => call(() => http.post<PairMap>("/v2/pairings/query", { slugs: chunk })));
 }
 
 export async function fetchPairDetails(http: SignedHttp, slugs: readonly string[]): Promise<PairDetails> {
-  const q = slugsQuery(slugs);
-  return q ? call(() => http.get<PairDetails>(`/v2/pairings?detail=1&slugs=${q}`)) : {};
+  return queryMerged(slugs, (chunk) =>
+    call(() => http.post<PairDetails>("/v2/pairings/query", { slugs: chunk, detail: true })),
+  );
 }
 
 export function operatorOf(pairs: PairMap, slug: string): string | null {

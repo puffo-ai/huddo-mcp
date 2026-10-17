@@ -3,6 +3,7 @@ import { basename, extname, join as joinPath } from "node:path";
 import { HttpError } from "../src/http/types";
 import { signup } from "../src/identity/device/signup";
 import { decryptKeyBackup, exportKeyBackup } from "../src/identity/primitives/backup";
+import { registerNewDevice } from "../src/identity/device/register-device";
 import {
   createChannel,
   createSpace,
@@ -1507,7 +1508,7 @@ export async function exportIdentity(ctx: Ctx, opts: { passphrase?: string; out?
 
 export async function importIdentity(ctx: Ctx, file: string, passphrase: string) {
   const text = file === "-" ? readFileSync(0, "utf8") : readFileSync(file, "utf8");
-  const identity = await decryptKeyBackup(new Blob([text]), passphrase);
+  const identity = await registerNewDevice(await decryptKeyBackup(new Blob([text]), passphrase), ctx.rt.crypto);
   await ctx.rt.keyStore.saveIdentity(identity);
   updateConfig((c) => {
     c.active = identity.slug;

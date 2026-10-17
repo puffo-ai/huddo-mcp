@@ -1,4 +1,6 @@
 import type { StoredIdentity, BrowserKeyStore } from "./keystore";
+import type { CryptoOps } from "../../http/types";
+import { registerNewDevice } from "../device/register-device";
 
 const PBKDF2_ITERATIONS = 600_000;
 const SALT_BYTES = 32;
@@ -50,9 +52,11 @@ export async function exportKeyBackup(
 export async function importKeyBackup(
   file: Blob,
   passphrase: string,
-  keyStore: BrowserKeyStore
+  keyStore: BrowserKeyStore,
+  crypto?: CryptoOps,
 ): Promise<StoredIdentity> {
-  const identity = await decryptKeyBackup(file, passphrase);
+  const restored = await decryptKeyBackup(file, passphrase);
+  const identity = crypto ? await registerNewDevice(restored, crypto) : restored;
   await keyStore.saveIdentity(identity);
   return identity;
 }

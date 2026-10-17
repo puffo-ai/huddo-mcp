@@ -44,36 +44,6 @@ export async function setSpaceArchived(
   return http.post(`/spaces/${encodeURIComponent(spaceId)}/${archived ? "archive" : "unarchive"}`, {});
 }
 
-export interface MemberSettingsResponse {
-  auto_accept_owner_invite: boolean;
-  auto_accept_member_invite: boolean;
-}
-
-export interface MemberSettingsPatch {
-  auto_accept_owner_invite?: boolean;
-  auto_accept_member_invite?: boolean;
-}
-
-export async function getMemberSettings(
-  http: PuffoHttpClient,
-  spaceId: string,
-): Promise<MemberSettingsResponse> {
-  return http.get<MemberSettingsResponse>(
-    `/spaces/${encodeURIComponent(spaceId)}/members/me/settings`,
-  );
-}
-
-export async function patchMemberSettings(
-  http: PuffoHttpClient,
-  spaceId: string,
-  patch: MemberSettingsPatch,
-): Promise<MemberSettingsResponse> {
-  return http.patch<MemberSettingsResponse>(
-    `/spaces/${encodeURIComponent(spaceId)}/members/me/settings`,
-    patch as unknown as Record<string, unknown>,
-  );
-}
-
 export async function updateChannel(
   http: PuffoHttpClient,
   spaceId: string,

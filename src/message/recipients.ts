@@ -1,6 +1,7 @@
 import type { PuffoHttpClient } from "../http/client";
 import type { CryptoOps } from "../http/types";
 import { HttpError } from "../http/types";
+import { idChunks } from "../http/query-ids";
 
 export interface RecipientDevice {
   device_id: string;
@@ -162,11 +163,9 @@ export async function fetchRecipientDevices(
   if (unique.length === 0) return [];
 
   const devices: CertsActiveEntry[] = [];
-  for (const chunk of chunkRecipientSlugs(unique)) {
+  for (const chunk of idChunks(unique)) {
     try {
-      const resp = await http.get<CertsActiveResponse>(
-        `/certs/active?slugs=${encodeURIComponent(chunk.join(","))}`,
-      );
+      const resp = await http.post<CertsActiveResponse>("/certs/active/query", { slugs: chunk });
       devices.push(...(resp.devices ?? []));
     } catch (err) {
       if (err instanceof HttpError && err.status === 404) {
@@ -299,6 +298,65 @@ export async function senderIndexFor(
   return index;
 }
 
+function applySubkeyEntry(crypto: CryptoOps, index: SenderSubkeyIndex, entry: CertSyncEntry): void {
+  if (entry.kind !== "subkey_cert") return;
+  const subkeyId = entry.cert.subkey_id as string | undefined;
+  const pkB64 = entry.cert.subkey_public_key as string | undefined;
+  const deviceId = entry.cert.device_id as string | undefined;
+  if (subkeyId && pkB64 && !index.pkBySubkeyId.has(subkeyId)) {
+    try {
+      index.pkBySubkeyId.set(subkeyId, crypto.base64urlDecode(pkB64));
+      if (deviceId) index.deviceIdBySubkeyId.set(subkeyId, deviceId);
+    } catch {
+    }
+  }
+  if (subkeyId && deviceId && !index.deviceIdBySubkeyId.has(subkeyId)) {
+    index.deviceIdBySubkeyId.set(subkeyId, deviceId);
+  }
+}
+
+export async function prefetchSenderSubkeyIndexes(
+  http: PuffoHttpClient,
+  crypto: CryptoOps,
+  slugs: readonly string[],
+  cache: Map<string, SenderSubkeyIndex>,
+  store?: SenderCertStore | null,
+): Promise<void> {
+  const missing: string[] = [];
+  for (const slug of new Set(slugs)) {
+    if (!slug) continue;
+    const index = await senderIndexFor(cache, slug, store);
+    if (index.pkBySubkeyId.size === 0) missing.push(slug);
+  }
+  for (const chunk of idChunks(missing)) {
+    const lastSeq = new Map<string, string>();
+    let since = "0";
+    while (true) {
+      const resp = await http.post<CertSyncResponse>("/certs/sync/query", {
+        slugs: chunk,
+        since: Number(since),
+        limit: 500,
+      });
+      const entries = resp.entries ?? [];
+      if (entries.length === 0) break;
+      for (const entry of entries) {
+        since = String(entry.seq);
+        const index = cache.get(entry.slug);
+        if (!index) continue;
+        applySubkeyEntry(crypto, index, entry);
+        lastSeq.set(entry.slug, String(entry.seq));
+      }
+      if (!resp.has_more) break;
+    }
+    for (const [slug, seq] of lastSeq) {
+      const index = cache.get(slug);
+      if (!index) continue;
+      index.since = seq;
+      await store?.saveSenderSubkeyIndex(slug, index);
+    }
+  }
+}
+
 export async function refreshSenderSubkeyIndex(
   http: PuffoHttpClient,
   crypto: CryptoOps,
@@ -315,21 +373,7 @@ export async function refreshSenderSubkeyIndex(
     if (entries.length === 0) break;
 
     for (const entry of entries) {
-      if (entry.kind === "subkey_cert") {
-        const subkeyId = entry.cert.subkey_id as string | undefined;
-        const pkB64 = entry.cert.subkey_public_key as string | undefined;
-        const deviceId = entry.cert.device_id as string | undefined;
-        if (subkeyId && pkB64 && !index.pkBySubkeyId.has(subkeyId)) {
-          try {
-            index.pkBySubkeyId.set(subkeyId, crypto.base64urlDecode(pkB64));
-            if (deviceId) index.deviceIdBySubkeyId.set(subkeyId, deviceId);
-          } catch {
-          }
-        }
-        if (subkeyId && deviceId && !index.deviceIdBySubkeyId.has(subkeyId)) {
-          index.deviceIdBySubkeyId.set(subkeyId, deviceId);
-        }
-      }
+      applySubkeyEntry(crypto, index, entry);
       since = String(entry.seq);
     }
 

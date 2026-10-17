@@ -22,16 +22,6 @@ export interface DeviceCert {
   signature: string;
 }
 
-export interface DeviceRevocation {
-  type: string;
-  version: number;
-  device_id: string;
-  root_public_key: string;
-  effective_from: number;
-  issued_at: number;
-  signature: string;
-}
-
 export function createDeviceCert(
   crypto: CryptoOps,
   rootSecretKey: Uint8Array,
@@ -70,29 +60,32 @@ export function createDeviceCert(
   return cert;
 }
 
+export interface DeviceRevocation {
+  type: string;
+  version: number;
+  device_id: string;
+  root_public_key: string;
+  effective_from: number;
+  issued_at: number;
+  signature: string;
+}
+
 export function createDeviceRevocation(
   crypto: CryptoOps,
   rootSecretKey: Uint8Array,
   deviceId: string,
-  effectiveFromMs?: number,
-  issuedAtMs?: number,
+  now: number = Date.now(),
 ): DeviceRevocation {
-  const rootPk = crypto.ed25519PublicKeyFromSecret(rootSecretKey);
-  const now = Date.now();
-
-  const rev: DeviceRevocation = {
+  const revocation: DeviceRevocation = {
     type: "device_revocation",
     version: 1,
     device_id: deviceId,
-    root_public_key: crypto.base64urlEncode(rootPk),
-    effective_from: effectiveFromMs ?? now,
-    issued_at: issuedAtMs ?? now,
+    root_public_key: crypto.base64urlEncode(crypto.ed25519PublicKeyFromSecret(rootSecretKey)),
+    effective_from: now,
+    issued_at: now,
     signature: "",
   };
-
-  const canonical = crypto.canonicalizeForSigning(JSON.stringify(rev));
-  const sig = crypto.ed25519Sign(rootSecretKey, canonical);
-  rev.signature = crypto.base64urlEncode(sig);
-
-  return rev;
+  const canonical = crypto.canonicalizeForSigning(JSON.stringify(revocation));
+  revocation.signature = crypto.base64urlEncode(crypto.ed25519Sign(rootSecretKey, canonical));
+  return revocation;
 }

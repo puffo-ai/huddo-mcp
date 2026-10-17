@@ -23,6 +23,8 @@ export const DEFAULT_UPLOAD_TIMEOUT_MS = 5 * 60_000;
 export const UNAUTHORIZED_REQUEST_RETRY_DELAYS_MS = [0, 150, 350] as const;
 export const SESSION_RECOVERY_TIMEOUT_MS = 10_000;
 
+const rotationsInFlight = new Map<string, Promise<Record<string, unknown>>>();
+
 export class PuffoHttpClient {
   static onSubkeyRotated = onSubkeyRotated;
 
@@ -321,6 +323,17 @@ export class PuffoHttpClient {
   }
 
   async rotateSubkeyWithRetry(assertCurrent?: () => void): Promise<Record<string, unknown>> {
+    const key = `${this.serverUrl}|${this.slug}`;
+    const shared = rotationsInFlight.get(key);
+    if (shared) return shared;
+    const run = this.rotateSubkeyOnce(assertCurrent).finally(() => {
+      if (rotationsInFlight.get(key) === run) rotationsInFlight.delete(key);
+    });
+    rotationsInFlight.set(key, run);
+    return run;
+  }
+
+  private async rotateSubkeyOnce(assertCurrent?: () => void): Promise<Record<string, unknown>> {
     return trackSubkeyRotationTransaction(async () => {
       const assertOwner = assertCurrent ?? this.assertSessionCurrent.bind(this);
       assertOwner();

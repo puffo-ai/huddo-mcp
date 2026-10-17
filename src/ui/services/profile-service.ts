@@ -1,4 +1,5 @@
 import type { PuffoHttpClient } from "../../http/client";
+import { idChunks } from "../../http/query-ids";
 import type { CryptoOps } from "../../http/types";
 
 export {
@@ -127,39 +128,13 @@ interface GetProfilesResponse {
   profiles: ProfileEntry[];
 }
 
-const MAX_PROFILE_QUERY_CHARS = 1500;
-
-export function chunkProfileSlugs(slugs: string[]): string[][] {
-  const batches: string[][] = [];
-  let batch: string[] = [];
-  let width = 0;
-  for (const slug of slugs) {
-    const encoded = encodeURIComponent(slug).length;
-    const cost = batch.length ? encoded + 3 : encoded;
-    if (batch.length && width + cost > MAX_PROFILE_QUERY_CHARS) {
-      batches.push(batch);
-      batch = [slug];
-      width = encoded;
-      continue;
-    }
-    batch.push(slug);
-    width += cost;
-  }
-  if (batch.length) batches.push(batch);
-  return batches;
-}
-
 export async function fetchProfiles(
   http: PuffoHttpClient,
   slugs: string[],
 ): Promise<ProfileEntry[]> {
-  const unique = Array.from(new Set(slugs.filter(Boolean)));
-  if (unique.length === 0) return [];
   const pages = await Promise.all(
-    chunkProfileSlugs(unique).map((batch) =>
-      http.get<GetProfilesResponse>(
-        `/identities/profiles?slugs=${encodeURIComponent(batch.join(","))}`,
-      ),
+    idChunks(slugs).map((chunk) =>
+      http.post<GetProfilesResponse>("/identities/profiles/query", { slugs: chunk }),
     ),
   );
   return pages.flatMap((resp) => resp.profiles ?? []);
