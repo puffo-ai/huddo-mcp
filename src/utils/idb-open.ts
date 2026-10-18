@@ -93,7 +93,12 @@ export function openIdb(
         }
         settled = true;
         clearTimeout(timer);
-        resolve(req.result);
+        const db = req.result;
+        db.onversionchange = () => {
+          db.close();
+          if (typeof window !== "undefined" && typeof window.location?.reload === "function") window.location.reload();
+        };
+        resolve(db);
       };
       req.onerror = () => {
         if (settled) return;

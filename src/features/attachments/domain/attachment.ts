@@ -12,6 +12,8 @@ export interface AttachmentReference {
   content_key?: string;
   aead_nonce?: string;
   sha256?: string;
+  width?: number;
+  height?: number;
 }
 
 export interface AttachmentsContent {
@@ -20,10 +22,14 @@ export interface AttachmentsContent {
 }
 
 export const ATTACHMENT_CONTENT_TYPE = "puffo/message+attachments/v1";
+export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 
 export function isAttachmentsContentType(contentType: string): boolean {
   return contentType === ATTACHMENT_CONTENT_TYPE;
 }
+
+const isSide = (n: unknown): n is number => Number.isInteger(n) && (n as number) > 0 && (n as number) <= 65_535;
 
 export function parseAttachmentsContent(content: unknown): AttachmentsContent | null {
   if (!content || typeof content !== "object") return null;
@@ -56,6 +62,10 @@ export function parseAttachmentsContent(content: unknown): AttachmentsContent | 
     if (typeof item.content_key === "string") attachment.content_key = item.content_key;
     if (typeof item.aead_nonce === "string") attachment.aead_nonce = item.aead_nonce;
     if (typeof item.sha256 === "string") attachment.sha256 = item.sha256;
+    if (isSide(item.width) && isSide(item.height)) {
+      attachment.width = item.width;
+      attachment.height = item.height;
+    }
     attachments.push(attachment);
   }
   return { text: candidate.text, attachments };

@@ -7,6 +7,7 @@ import {
 import { isPlaintextEnvelope, type PlaintextMessageEnvelope } from "../src/message/core/types";
 import { isAppNoteContent } from "../src/huddo/app-note";
 import { isWhisperContent, type WhisperContent } from "../src/huddo/whisper";
+import { parseRevision } from "../src/huddo/revisions";
 
 export { isPeer, operatorTag } from "../src/huddo/pairing";
 
@@ -31,6 +32,7 @@ export interface Row {
   whisper?: { to: string; readable: boolean };
   via?: { appId: string; name: string };
   reactions?: { emoji: string; by: string[] }[];
+  revision?: { kind: "edit" | "unsend"; target: string };
 }
 
 interface HistoryResponse {
@@ -71,11 +73,20 @@ export function rowFromEnvelope(seq: number, envelope: { type?: string }, channe
     if (!event) return null;
     return { ...base, text: "", attachments: [], system: { action: event.action, actor: event.actor_slug } };
   }
+  const revision = parseRevision(payload.content_type, payload.content);
+  if (revision?.kind === "edit") return { ...base, text: revision.text, attachments: [], revision: { kind: "edit", target: revision.target } };
+  if (revision?.kind === "unsend") return { ...base, text: "", attachments: [], revision: { kind: "unsend", target: revision.target } };
   if (isWhisperContent(payload.content)) {
     const opened = typeof payload.space_id === "string"
       ? whisperOpener?.(payload.content, { spaceId: payload.space_id, channelId, sender: payload.sender_slug }) ?? null
       : null;
-    return { ...base, text: opened ?? "", attachments: [], whisper: { to: payload.content.to, readable: opened !== null } };
+    return {
+      ...base,
+      text: opened ?? "",
+      attachments: [],
+      whisper: { to: payload.content.to, readable: opened !== null },
+      ...(revision ? { revision: { kind: "edit" as const, target: revision.target } } : {}),
+    };
   }
   if (isAppNoteContent(payload.content)) {
     if (!payload.content.text.trim()) return null;
@@ -198,7 +209,8 @@ export function formatRow(
   const head = `${neutralizeTags(prefix)}#${row.seq || "-"} ${row.id} | ${sender} | ${new Date(row.sentAt).toISOString()} | `;
   if (row.system) return `${head}* ${who(row.system.actor)} ${row.system.action}${row.system.target ? ` ${who(row.system.target)}` : ""}`;
   const flat = neutralizeTags(row.text.replace(/\r?\n/g, "\\n"));
-  const parts = row.whisper ? [`[whisper to ${who(row.whisper.to)}]`, row.whisper.readable ? flat : ""] : [flat];
+  const mark = row.revision ? `[${row.revision.kind === "edit" ? "edits" : "unsent"} ${neutralizeTags(row.revision.target)}]` : "";
+  const parts = row.whisper ? [`[whisper to ${who(row.whisper.to)}]`, mark, row.whisper.readable ? flat : ""] : [mark, flat];
   if (row.via) parts.push(`[via app ${neutralizeTags(row.via.appId)} (${neutralizeTags(row.via.name)})]`);
   if (row.attachments.length) {
     parts.push(`[attachments: ${row.attachments.map((a) => `${a.filename} (${a.mime_type}, ${formatSize(a.size)})`).join(", ")}]`);

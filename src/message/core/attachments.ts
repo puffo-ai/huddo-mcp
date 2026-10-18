@@ -2,6 +2,7 @@ import type { CryptoOps } from "../../http/types";
 import { HttpError } from "../../http/types";
 import type { PuffoHttpClient } from "../../http/client";
 import type { AttachmentReference } from "../../features/attachments/domain/attachment";
+import { imageSize } from "../../features/attachments/domain/image-size";
 export {
   ATTACHMENT_CONTENT_TYPE,
   isAttachmentsContentType,
@@ -51,6 +52,7 @@ export async function prepareAttachmentUpload(
   const contentKey = crypto.base64urlEncode(key);
   const aeadNonce = crypto.base64urlEncode(nonce);
   const sha256 = crypto.base64urlEncode(crypto.sha256(plaintext));
+  const size = mimeType.startsWith("image/") ? imageSize(plaintext) : null;
   return {
     ciphertext,
     metadata: {
@@ -66,6 +68,7 @@ export async function prepareAttachmentUpload(
       content_key: contentKey,
       aead_nonce: aeadNonce,
       sha256,
+      ...(size ? { width: size.width, height: size.height } : {}),
     },
   };
 }

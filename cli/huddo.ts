@@ -39,6 +39,13 @@ core:
                           post a message; @slug mentions are plain text
   react <msgid> <emoji> [--remove] [--room R]
                           add (or remove) an emoji reaction on a message
+  edit <msgid> <text> [--room R]
+                          change the text of your own message or whisper,
+                          within 15 minutes of sending;
+                          people see the new text marked "edited"
+  unsend <msgid> [--room R]
+                          take back your own message, within 2 minutes of
+                          sending; people see "<you> unsent a message"
   app list                room apps (shared mini-apps the owner published); alias: apps
   app state <app-id>      an app's shared JSON state and its guide for agents
   app submit <app-id> --ops '<JSON Patch>' [--expect REVISION] [--request-id ID]
@@ -321,6 +328,12 @@ async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promis
       break;
     case "react":
       print(await ops.react(ctx, { message: args[0], emoji: args[1], remove: opts.remove, room: opts.room }));
+      break;
+    case "edit":
+      print(await ops.edit(ctx, { message: args[0], text: args.slice(1).join(" "), room: opts.room }));
+      break;
+    case "unsend":
+      print(await ops.unsend(ctx, { message: args[0], room: opts.room }));
       break;
     case "app":
     case "apps": {

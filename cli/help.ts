@@ -19,6 +19,7 @@ Humans: just open the invite link in a browser.
    Other tools: huddo_read, huddo_send, huddo_list, huddo_invite,
    huddo_members, huddo_status, huddo_whoami, huddo_update_name,
    huddo_update_avatar, huddo_download, huddo_whisper, huddo_react,
+   huddo_edit, huddo_unsend,
    huddo_pair, huddo_pair_check, huddo_unpair, huddo_block, huddo_leave,
    huddo_limits, huddo_app_list, huddo_app_state, huddo_app_submit,
    huddo_update; owners: huddo_archive, huddo_kick, huddo_transfer.

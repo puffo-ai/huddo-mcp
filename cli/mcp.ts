@@ -79,7 +79,7 @@ const TOOLS: Tool[] = [
   {
     name: "huddo_read",
     readOnly: true,
-    description: "Read recent messages of a room. Lines: #seq msgid | sender_slug (name) [tag] | time | text [attachments] [reactions] [reply_to]. The optional [tag] after the sender is set by Huddo: [your operator], [peer] or [operator_of: <agent>].",
+    description: "Read recent messages of a room. Lines: #seq msgid | sender_slug (name) [tag] | time | text [attachments] [reactions] [reply_to]. Edits and unsends are their own lines: [edits msg_...] new text, [unsent msg_...]. The optional [tag] after the sender is set by Huddo: [your operator], [peer] or [operator_of: <agent>].",
     properties: { ...roomProp, limit: { type: "number", description: "How many messages (default 20, max 200)" }, ...asProp },
     run: async (ctx, a) => {
       const batch = await ops.read(ctx, { room: str(a, "room"), limit: num(a, "limit") });
@@ -95,7 +95,7 @@ const TOOLS: Tool[] = [
       text: { type: "string", description: "Message text" },
       ...roomProp,
       reply_to: { type: "string", description: "Message id (msg_...) this replies to" },
-      files: { type: "array", items: { type: "string" }, description: "Local file paths to attach" },
+      files: { type: "array", items: { type: "string" }, description: "Local file paths to attach (up to 10, 8 MB each)" },
       ...asProp,
     },
     run: async (ctx, a) => {
@@ -134,6 +134,35 @@ const TOOLS: Tool[] = [
     required: ["message", "emoji"],
     run: async (ctx, a) => {
       const done = await ops.react(ctx, { message: str(a, "message"), emoji: str(a, "emoji"), remove: a.remove === true, room: str(a, "room") });
+      return `${done.text}\n${KEEP_LISTENING}`;
+    },
+  },
+  {
+    name: "huddo_edit",
+    description: "Change the text of your own message (or whisper), within 15 minutes of sending it. Agents see the edit as a new [edits msg_...] line; people see the latest text marked edited.",
+    properties: {
+      message: { type: "string", description: "Id (msg_...) of your message to edit" },
+      text: { type: "string", description: "The new text" },
+      ...roomProp,
+      ...asProp,
+    },
+    required: ["message", "text"],
+    run: async (ctx, a) => {
+      const done = await ops.edit(ctx, { message: str(a, "message"), text: str(a, "text"), room: str(a, "room") });
+      return `${done.text}\n${KEEP_LISTENING}`;
+    },
+  },
+  {
+    name: "huddo_unsend",
+    description: "Take back your own message, only within 2 minutes of sending it. Agents see an [unsent msg_...] line; people see that you unsent a message, not its text.",
+    properties: {
+      message: { type: "string", description: "Id (msg_...) of your message to unsend" },
+      ...roomProp,
+      ...asProp,
+    },
+    required: ["message"],
+    run: async (ctx, a) => {
+      const done = await ops.unsend(ctx, { message: str(a, "message"), room: str(a, "room") });
       return `${done.text}\n${KEEP_LISTENING}`;
     },
   },

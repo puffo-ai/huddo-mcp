@@ -32,6 +32,14 @@ import { fetchRecipientDevices } from "../src/message/recipients";
 import { sealWhisper, WHISPER_CONTENT_TYPE } from "../src/huddo/whisper";
 import { REACTION_CONTENT_TYPE, fetchReactionSnapshot, reactionChips, reactionContent } from "../src/huddo/reactions";
 import {
+  EDIT_CONTENT_TYPE,
+  UNSEND_CONTENT_TYPE,
+  editContent,
+  revisionError,
+  unsendContent,
+  whisperEditContent,
+} from "../src/huddo/revisions";
+import {
   deleteApp,
   getAppState,
   listApps,
@@ -49,6 +57,7 @@ import {
   encryptAndUploadAttachment,
   type AttachmentMeta,
 } from "../src/message/core/attachments";
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE } from "../src/features/attachments/domain/attachment";
 import { fetchProfiles, updateProfile, uploadAvatar } from "../src/ui/services/profile-service";
 import { MAX_PROFILE_AVATAR_BYTES } from "../src/features/profiles/domain/human-profile";
 import { defaultGroupName, invitePath, mainChannelId } from "../src/huddo/config";
@@ -702,7 +711,7 @@ export async function use(ctx: Ctx, roomArg: string) {
 }
 
 async function withReactions(acct: Account, room: Room, rows: Row[]): Promise<Row[]> {
-  const ids = rows.filter((r) => !r.system && !r.whisper).map((r) => r.id);
+  const ids = rows.filter((r) => !r.system && !r.whisper && !r.revision).map((r) => r.id);
   if (ids.length === 0) return rows;
   const snapshot = await fetchReactionSnapshot(acct.http, room.spaceId, room.channelId, ids).catch(() => null);
   if (!snapshot) return rows;
@@ -960,11 +969,13 @@ export async function send(ctx: Ctx, opts: { text?: string; room?: string; reply
   if (!opts.replyTo && opts.text) opts = { ...opts, ...splitTrailingReplyTo(opts.text) };
   const files = opts.files ?? [];
   if (!opts.text?.length && files.length === 0) throw new UserError("nothing to send: give text and/or files");
+  if (files.length > MAX_ATTACHMENTS_PER_MESSAGE) throw new UserError(`up to ${MAX_ATTACHMENTS_PER_MESSAGE} files per message`);
   const acct = account(ctx);
   const room = await currentRoom(acct, opts.room);
   const attachments: AttachmentMeta[] = [];
   for (const path of files) {
     const bytes = readFileArg(path);
+    if (bytes.length > MAX_ATTACHMENT_BYTES) throw new UserError(`${basename(path)} is larger than ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB`);
     const file = new File([bytes], basename(path), { type: MIME[extname(path).toLowerCase()] ?? "application/octet-stream" });
     const meta = await encryptAndUploadAttachment(ctx.rt.crypto, acct.http, file);
     await downloadAndDecryptAttachment(ctx.rt.crypto, acct.http, meta);
@@ -1040,6 +1051,85 @@ export async function react(ctx: Ctx, opts: { message?: string; emoji?: string; 
   return {
     json: { id: envelope.envelope_id, seq: posted.seq ?? null, spaceId: room.spaceId, channelId: room.channelId, room: room.name, message, emoji, removed: Boolean(opts.remove) },
     text: `${opts.remove ? "removed" : "reacted"} ${emoji} ${opts.remove ? "from" : "to"} ${message} in "${room.name}" (${room.spaceId})`,
+  };
+}
+
+async function postRevision(acct: Account, envelope: Parameters<typeof postMessageEnvelope>[1]) {
+  try {
+    return await postWithLimits(acct, envelope);
+  } catch (e) {
+    const known = revisionError(e);
+    if (known) throw new UserError(known);
+    if (e instanceof HttpError && [400, 403, 410].includes(e.status)) {
+      let message = e.body;
+      try {
+        message = (JSON.parse(e.body) as { message?: string }).message ?? e.body;
+      } catch {
+        message = e.body;
+      }
+      throw new UserError(message.slice(0, 500));
+    }
+    throw e;
+  }
+}
+
+export async function edit(ctx: Ctx, opts: { message?: string; text?: string; room?: string }) {
+  const message = opts.message?.trim() ?? "";
+  const text = opts.text?.trim() ?? "";
+  if (!message) throw new UserError("edit needs the message id (msg_...)");
+  if (!text) throw new UserError("edit needs the new text");
+  const acct = account(ctx);
+  const room = await currentRoom(acct, opts.room);
+  const original = (await fetchRows(acct.http, room.channelId, PARENT_LOOKUP_LIMIT)).find((r) => r.id === message);
+  if (original && original.sender !== acct.identity.slug) throw new UserError("you can only edit your own messages");
+  const signer = await eventSigner(ctx.rt, acct);
+  let contentType = EDIT_CONTENT_TYPE;
+  let content: unknown = editContent(message, text);
+  if (original?.whisper) {
+    const to = original.whisper.to;
+    const devices = await fetchRecipientDevices(acct.http, ctx.rt.crypto, [to, acct.identity.slug]);
+    if (!devices.some((d) => d.slug === to)) throw new UserError(`${to} has no active device to whisper to`);
+    const sealed = sealWhisper(ctx.rt.crypto, { spaceId: room.spaceId, channelId: room.channelId, sender: signer.slug, to }, text, devices);
+    contentType = WHISPER_CONTENT_TYPE;
+    content = whisperEditContent(sealed, message);
+  }
+  const envelope = buildPlaintextMessage(ctx.rt.crypto, signer.subkeySecretKey, {
+    envelope_kind: "channel",
+    sender_slug: signer.slug,
+    sender_subkey_id: signer.subkeyId,
+    space_id: room.spaceId,
+    channel_id: room.channelId,
+    content_type: contentType,
+    content,
+    recipients: [],
+  });
+  const posted = await postRevision(acct, envelope);
+  return {
+    json: { id: envelope.envelope_id, seq: posted.seq ?? null, spaceId: room.spaceId, channelId: room.channelId, room: room.name, message, whisper: Boolean(original?.whisper) },
+    text: `edited ${message}${original?.whisper ? " (whisper)" : ""} in "${room.name}" (${room.spaceId})`,
+  };
+}
+
+export async function unsend(ctx: Ctx, opts: { message?: string; room?: string }) {
+  const message = opts.message?.trim() ?? "";
+  if (!message) throw new UserError("unsend needs the message id (msg_...)");
+  const acct = account(ctx);
+  const room = await currentRoom(acct, opts.room);
+  const signer = await eventSigner(ctx.rt, acct);
+  const envelope = buildPlaintextMessage(ctx.rt.crypto, signer.subkeySecretKey, {
+    envelope_kind: "channel",
+    sender_slug: signer.slug,
+    sender_subkey_id: signer.subkeyId,
+    space_id: room.spaceId,
+    channel_id: room.channelId,
+    content_type: UNSEND_CONTENT_TYPE,
+    content: unsendContent(message),
+    recipients: [],
+  });
+  const posted = await postRevision(acct, envelope);
+  return {
+    json: { id: envelope.envelope_id, seq: posted.seq ?? null, spaceId: room.spaceId, channelId: room.channelId, room: room.name, message },
+    text: `unsent ${message} in "${room.name}" (${room.spaceId})`,
   };
 }
 
