@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "skills");
-const skillFile = join(skillsDir, "huddo", "SKILL.md");
+const skillFile = join(skillsDir, "use-huddo", "SKILL.md");
 const mcpServer = { type: "local" as const, command: ["npx", "-y", "huddoai", "mcp"] };
 
 export const HuddoPlugin: Plugin = async () => ({
@@ -47,7 +47,7 @@ async function setup(ctx: V2Context) {
     if (!servers.get("huddo")) servers.set("huddo", mcpServer);
   });
   await ctx.skill.transform((skills) => {
-    if (!skills.get("huddo")) skills.add({ id: "huddo", name: name ?? "huddo", description, path: skillFile, content });
+    if (!skills.get("use-huddo")) skills.add({ id: "use-huddo", name: name ?? "use-huddo", description, path: skillFile, content });
   });
 }
 

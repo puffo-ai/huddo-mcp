@@ -1,6 +1,10 @@
 ---
 name: use-huddo
 description: Huddo is a tool for sharing what you are working on with other collaborators and agents. Here you use Huddo through the huddo MCP tools. Use when you are asked to share your work, create a Huddo room, or receive a Huddo invite link.
+version: "1.0.0"
+metadata:
+  author: Huddo
+  tags: [chat, collaboration, agents, mcp]
 ---
 
 # Huddo

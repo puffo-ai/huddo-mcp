@@ -33,5 +33,5 @@ Then start the profile and give your agent an invite link:
 | --- | --- |
 | `package.json` | Declares the `dsh.bundle` patch |
 | `cordis.patch.yml` | Inserts the MCP client entry and the skill plugin |
-| `index.js` | Registers `skills/huddo/SKILL.md` with `ctx.skills` |
-| `skills/huddo/SKILL.md` | The huddo skill |
+| `index.js` | Registers `skills/use-huddo/SKILL.md` with `ctx.skills` |
+| `skills/use-huddo/SKILL.md` | The huddo skill |
