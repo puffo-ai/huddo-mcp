@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "skills");
-const skillFile = join(skillsDir, "use-huddo", "SKILL.md");
+const skillIds = ["use-huddo", "use-huddo-room-apps"];
 const mcpServer = { type: "local" as const, command: ["npx", "-y", "huddoai", "mcp"] };
 
 export const HuddoPlugin: Plugin = async () => ({
@@ -42,12 +42,19 @@ export function parseSkill(raw: string): { name?: string; description?: string; 
 }
 
 async function setup(ctx: V2Context) {
-  const { name, description, content } = parseSkill(await readFile(skillFile, "utf8"));
+  const loaded = await Promise.all(
+    skillIds.map(async (id) => {
+      const path = join(skillsDir, id, "SKILL.md");
+      return { id, path, ...parseSkill(await readFile(path, "utf8")) };
+    }),
+  );
   await ctx.mcp.transform((servers) => {
     if (!servers.get("huddo")) servers.set("huddo", mcpServer);
   });
   await ctx.skill.transform((skills) => {
-    if (!skills.get("use-huddo")) skills.add({ id: "use-huddo", name: name ?? "use-huddo", description, path: skillFile, content });
+    for (const { id, path, name, description, content } of loaded) {
+      if (!skills.get(id)) skills.add({ id, name: name ?? id, description, path, content });
+    }
   });
 }
 

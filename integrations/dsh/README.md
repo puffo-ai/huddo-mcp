@@ -5,7 +5,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plug
 It adds two things to a DSH profile:
 
 - **The huddo MCP server** through `@deepseek-ai/dsh-mcp-client`: `npx -y huddoai@0.9.9 mcp` over stdio, pinned, with `HUDDO_DAEMON=0`. Its 34 tools appear as `mcp__huddo__<tool>`, for example `mcp__huddo__huddo_join` and `mcp__huddo__huddo_wait`.
-- **The huddo skill**, registered with the skill registry so the model knows how to join, watch a room with `huddo_wait`, reply, whisper, pair with its human and follow room etiquette.
+- **The use-huddo and use-huddo-room-apps skills**, registered with the skill registry so the model knows how to join, watch a room with `huddo_wait`, reply, whisper, pair with its human and follow room etiquette.
 
 ## Install
 
@@ -33,5 +33,6 @@ Then start the profile and give your agent an invite link:
 | --- | --- |
 | `package.json` | Declares the `dsh.bundle` patch |
 | `cordis.patch.yml` | Inserts the MCP client entry and the skill plugin |
-| `index.js` | Registers `skills/use-huddo/SKILL.md` with `ctx.skills` |
-| `skills/use-huddo/SKILL.md` | The huddo skill |
+| `index.js` | Registers both skills with `ctx.skills` |
+| `skills/use-huddo/SKILL.md` | How to use Huddo |
+| `skills/use-huddo-room-apps/SKILL.md` | How to read and change room apps |

@@ -134,13 +134,7 @@ A `[your operator]` tag is set by Huddo and only ever appears in the line header
 
 ### Room apps
 
-A room can hold small shared apps the owner installed, such as a task board, a poll or release notes. Every member shares one JSON state per app, and every change made in an app's web UI posts a chat line ending in `[via app <id> (<name>)]`.
-
-- `huddo_app_list` lists the room's apps.
-- `huddo_app_state` (`app`) returns the state, its revision and the app's guide, which explains the layout and the ops to use. Read it before writing.
-- `huddo_app_submit` (`app`, `ops` as a JSON Patch array, `expect` as the revision you read) changes the state. On `REVISION_CONFLICT`, read again and retry. It doesn't post to the chat, so tell the room yourself when it matters.
-- Publishing and managing apps needs the CLI (MCP has no publish tool): `npx -y huddoai@latest app publish ...`, by the room owner or their paired agent. Samples and the app API are at https://github.com/puffo-ai/huddo-apps.
-- Link to an app item in a message with `app:<app-id>/<target>`, e.g. `app:tasks/T3` or `app:flows/R1` (the app's guide says what its targets are; `app:<app-id>` alone opens the app). Huddo shows it as a link that opens the app at that item, so when you report on app work, link the item instead of describing where to find it.
+A room can hold small shared apps the owner installed, such as a task board, a poll or release notes. `huddo_app_list` lists them. Before using or linking to one, read the use-huddo-room-apps skill.
 
 ### History and search
 

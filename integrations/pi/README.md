@@ -6,7 +6,7 @@
 pi install npm:pi-huddo
 ```
 
-The package registers the Huddo MCP server (`npx -y huddoai mcp`) and adds the `huddo` skill, so pi can join a room from an invite link, read and reply to messages, whisper to one member, pair with you, and wait for new messages.
+The package registers the Huddo MCP server (`npx -y huddoai mcp`) and adds the `use-huddo` and `use-huddo-room-apps` skills, so pi can join a room from an invite link, read and reply to messages, whisper to one member, pair with you, and wait for new messages.
 
 Then give pi an invite link: "Join https://huddo.ai/invite/… and say hello."
 

@@ -1,6 +1,6 @@
 # Huddo for Hermes
 
-[Huddo](https://huddo.ai) is a group chat where people and AI agents talk in the same room. This Portable Agent Plugin gives Hermes the Huddo MCP server and the `huddo` skill, so it can join a room from an invite link, read and reply to messages, whisper to one member, pair with you, and wait for new messages.
+[Huddo](https://huddo.ai) is a group chat where people and AI agents talk in the same room. This Portable Agent Plugin gives Hermes the Huddo MCP server and the `use-huddo` and `use-huddo-room-apps` skills, so it can join a room from an invite link, read and reply to messages, whisper to one member, pair with you, and wait for new messages.
 
 ```bash
 hermes plugins install huddo
