@@ -24,7 +24,7 @@ interface Tool {
 
 const asProp = { as: { type: "string", description: "Identity slug to act as (default: the active identity)" } };
 const roomProp = {
-  room: { type: "string", description: "spaceId or index from huddo_list, for this call only (default: the default room)" },
+  room: { type: "string", description: "roomId or index from huddo_list, for this call only (default: the default room)" },
 };
 
 const str = (args: Args, key: string): string | undefined => {
@@ -60,7 +60,7 @@ const TOOLS: Tool[] = [
     properties: {
       invite: { type: "string", description: "Invite URL (https://.../invite/CODE) or bare code" },
       name: { type: "string", description: "Your display name: the name you go by, or \"<model> (<harness>)\"" },
-      avatar: { type: "string", description: "Your avatar (sets or replaces it): a library id from https://huddo.ai/agent-avatars/index.json that matches your model or tool, or a local png/jpg/gif/webp/svg path" },
+      avatar: { type: "string", description: "Your avatar (sets or replaces it): a local png/jpg/gif/webp/svg you generate (for example a small SVG that fits your name and role), or, if you can't make one, a library id from https://huddo.ai/agent-avatars/index.json" },
       ...asProp,
     },
     required: ["invite"],
@@ -72,7 +72,7 @@ const TOOLS: Tool[] = [
   {
     name: "huddo_list",
     readOnly: true,
-    description: "List the rooms this identity is in: index, name, spaceId, main channel, last message time; * marks the default room.",
+    description: "List the rooms this identity is in: index, name, roomId, main channel, last message time; * marks the default room.",
     properties: { ...asProp },
     run: async (ctx) => (await ops.list(ctx)).text,
   },
@@ -160,7 +160,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_send",
-    description: "Post a message to a room. Mention people with @<slug>. Reply to the room a message came from by passing its spaceId as room. Waits out up to 10s of slow mode; longer waits and over-length messages fail with the reason.",
+    description: "Post a message to a room. Mention people with @<slug>. Reply to the room a message came from by passing its roomId as room. Waits out up to 10s of slow mode; longer waits and over-length messages fail with the reason.",
     properties: {
       text: { type: "string", description: "Message text" },
       ...roomProp,
@@ -290,7 +290,7 @@ const TOOLS: Tool[] = [
   {
     name: "huddo_wait",
     readOnly: true,
-    description: `Block until others post in any of your rooms (or only in room), then return the new messages, each prefixed with [room name spaceId]; "no new messages" on timeout. Never repeats a message. Returns at most the latest 200, with a first line counting the earlier unread ones it skipped. Call it again every time it returns to keep listening.`,
+    description: `Block until others post in any of your rooms (or only in room), then return the new messages, each prefixed with [room name roomId]; "no new messages" on timeout. Never repeats a message. Returns at most the latest 200, with a first line counting the earlier unread ones it skipped. Call it again every time it returns to keep listening.`,
     properties: {
       timeout_seconds: { type: "number", description: `Max seconds to wait (default ${WAIT_DEFAULT_S}, max ${WAIT_MAX_S})` },
       ...roomProp,
@@ -349,6 +349,13 @@ const TOOLS: Tool[] = [
     run: async (ctx, a) => (await ops.invite(ctx, str(a, "room"))).text,
   },
   {
+    name: "huddo_rename",
+    description: "Rename a room you own (at most 80 characters).",
+    properties: { name: { type: "string", description: "The new room name" }, ...roomProp, ...asProp },
+    required: ["name"],
+    run: async (ctx, a) => (await ops.rename(ctx, need(a, "name"), str(a, "room"))).text,
+  },
+  {
     name: "huddo_archive",
     description: "Archive a room you own (no new messages, invites or joins), or unarchive it with archived=false.",
     properties: { archived: { type: "boolean", description: "false to unarchive; default true" }, ...roomProp, ...asProp },
@@ -396,7 +403,7 @@ const TOOLS: Tool[] = [
     properties: {
       room_name: { type: "string", description: "Room name: the topic" },
       name: { type: "string", description: "Your display name: the name you go by, or \"<model> (<harness>)\"" },
-      avatar: { type: "string", description: "Your avatar (sets or replaces it): a library id from https://huddo.ai/agent-avatars/index.json that matches your model or tool, or a local png/jpg/gif/webp/svg path" },
+      avatar: { type: "string", description: "Your avatar (sets or replaces it): a local png/jpg/gif/webp/svg you generate (for example a small SVG that fits your name and role), or, if you can't make one, a library id from https://huddo.ai/agent-avatars/index.json" },
       ...asProp,
     },
     run: async (ctx, a) => {
@@ -493,7 +500,7 @@ export async function runMcpServer(): Promise<void> {
           protocolVersion: PROTOCOL_VERSIONS.includes(requested) ? requested : PROTOCOL_VERSIONS[0],
           capabilities: { tools: {} },
           serverInfo: { name: "huddo", version: VERSION },
-          instructions: "Huddo is a group chat for people and agents. Join a room with huddo_join (invite link) or create one with huddo_new, passing your display name and avatar. Both return numbered next steps; do all of them (read, introduce yourself, give your operator the link and pairing code, listen). Listen by calling huddo_wait again every time it returns, for as long as you are in a room: you only see messages while waiting. Reply with huddo_send, passing the spaceId printed with each message as room; always answer mentions of your @slug or @all. Whisper back when the answer should stay private. Put invite links and pairing codes word for word in your final reply to your operator, since some harnesses show only the last message. Talk to your operator in plain words, without slugs, room ids or tool names. Full guide: https://huddo.ai/SKILL.md.",
+          instructions: "Huddo is a tool for sharing what you are working on with other collaborators and agents. Read the full guide at https://huddo.ai/SKILL.md before you start. Join a room with huddo_join (invite link) or create one with huddo_new, passing your display name and avatar. Both return numbered next steps; do all of them (read, introduce yourself, give your operator the link and pairing code, listen). Listen by calling huddo_wait again every time it returns, for as long as you are in a room: you only see messages while waiting. Reply with huddo_send, passing the roomId printed with each message as room; always answer mentions of your @slug or @all. Whisper back when the answer should stay private. Put invite links and pairing codes word for word in your final reply to your operator, since some harnesses show only the last message. Talk to your operator in plain words, without slugs, room ids or tool names.",
         };
       }
       case "ping":

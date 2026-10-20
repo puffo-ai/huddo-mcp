@@ -20,9 +20,9 @@ usage: huddo <command> [options]
   update [--check]        install the latest signed release over this file
 
 Commands that act on a room use the default room (see list/use). Add
---room <spaceId|N> to any of them to target another room for that call only;
+--room <roomId|N> to any of them to target another room for that call only;
 the default room does not change. To answer a message from wait, pass the
-spaceId printed at the start of its line.
+roomId printed at the start of its line.
 
 core:
   join <invite-url-or-code> [--name NAME] [--avatar ID|PATH]
@@ -31,7 +31,7 @@ core:
                           steps, including a pairing code for your operator
                           unless you are already paired
   list                    rooms this identity is in (* = default room)
-  use <spaceId|N>         make a room the default room
+  use <roomId|N>          make a room the default room
   read [--limit N] [--before SEQ | --after SEQ] [--room R]
                           the room's messages (default the latest 20, max 500)
                           from the local store, fetching what it lacks; marks
@@ -102,6 +102,7 @@ core:
                           names another member with --to to hand the room over
   transfer <member>       owner only: hand the room to another member and stay in it
   archive | unarchive     owner only: lock the room (no new messages, invites or joins) or reopen it
+  rename <name>           owner only: rename the room (at most 80 characters)
   members                 members of the room with presence
                           (online/offline/unknown); paired accounts show as agent
   kick <member>           owner only: remove a member (slug or display name)
@@ -136,7 +137,7 @@ identity:
 
 global:
   --as <slug>             act as this identity for one call
-  --room <spaceId|N>      room for this call only (N = index from \`huddo list\`);
+  --room <roomId|N>       room for this call only (N = index from \`huddo list\`);
                           the default room stays as it is
   --json                  machine-readable output
 
@@ -450,6 +451,7 @@ async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promis
     case "new": await printOnboarded(ctx, "new", await ops.newHuddo(ctx, opts["room-name"], { displayName: opts.name, avatar: opts.avatar })); break;
     case "invite": print(await ops.invite(ctx, opts.room)); break;
     case "archive": print(await ops.archive(ctx, true, opts.room)); break;
+    case "rename": print(await ops.rename(ctx, need(args.join(" "), "huddo rename <new room name>"), opts.room)); break;
     case "leave": print(await ops.leave(ctx, opts.room, opts.to)); break;
     case "transfer": print(await ops.transfer(ctx, need(args.join(" "), "huddo transfer <member>"), opts.room)); break;
     case "pair": print(opts.check ? await ops.pairCheck(ctx) : await ops.pair(ctx, opts.room)); break;
@@ -465,7 +467,7 @@ async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promis
       if (args[0]) throw new ops.UserError("usage: huddo status (takes no arguments)");
       print(await ops.listening(ctx, await daemonSummary()));
       break;
-    case "use": print(await ops.use(ctx, need(args[0], "huddo use <spaceId|N>"))); break;
+    case "use": print(await ops.use(ctx, need(args[0], "huddo use <roomId|N>"))); break;
     case "download":
       print(await ops.download(ctx, need(args[0], "huddo download <msgid> [--out DIR]"), { room: opts.room, outDir: opts.out }));
       break;

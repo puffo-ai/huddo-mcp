@@ -215,7 +215,7 @@ class Session {
         const got = await fetchSince(this.acct.http, channelId, from, stored.seeded ? Infinity : undefined);
         this.ok();
         this.synced = true;
-        this.add(channelId, got.rows);
+        if (!this.add(channelId, got.rows)) return;
         ackRows(this.acct.http, got.rows, this.slug);
         this.fetched.set(channelId, Math.max(got.maxSeq, cursor));
         this.persist();
@@ -227,12 +227,13 @@ class Session {
     return work;
   }
 
-  private add(channelId: string, rows: Row[]): void {
-    if (!rows.length) return;
+  private add(channelId: string, rows: Row[]): boolean {
+    if (!rows.length) return true;
     try {
       appendRows(this.slug, channelId, rows);
     } catch (e) {
       this.fail(e);
+      return false;
     }
     const list = this.inbox.get(channelId) ?? [];
     const known = new Set(list.map((r) => r.seq));
@@ -244,12 +245,13 @@ class Session {
       added = true;
       this.fetched.set(channelId, Math.max(this.fetched.get(channelId) ?? 0, row.seq));
     }
-    if (!added) return;
+    if (!added) return true;
     list.sort((a, b) => a.seq - b.seq);
     this.inbox.set(channelId, list.slice(-INBOX_CAP));
     this.lastEventAt = Date.now();
     this.persist();
     for (const w of [...this.waiters]) w.resolve();
+    return true;
   }
 
   private persist(): void {
@@ -410,13 +412,14 @@ class Session {
         break;
       case "message": {
         const envelope = frame.envelope as { type?: string; envelope_id?: string; signed_payload?: { payload?: { channel_id?: string } } } | undefined;
-        if (envelope?.envelope_id) ws.send(JSON.stringify({ type: "ack", envelope_ids: [envelope.envelope_id] }));
         const channelId = envelope?.signed_payload?.payload?.channel_id;
         if (!channelId) break;
         this.lastEventAt = Date.now();
         if (this.rooms.has(channelId)) {
           const row = typeof frame.seq === "number" ? rowFromEnvelope(frame.seq, envelope, channelId) : null;
-          if (row) this.add(channelId, [row]);
+          if (row && this.add(channelId, [row]) && envelope?.envelope_id) {
+            ws.send(JSON.stringify({ type: "ack", envelope_ids: [envelope.envelope_id] }));
+          }
           void this.backfill(channelId);
         } else {
           void this.refreshRooms().catch((e) => this.fail(e)).then(() => this.backfill(channelId));

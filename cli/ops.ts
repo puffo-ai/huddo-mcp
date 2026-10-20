@@ -16,6 +16,7 @@ import {
   setSpaceArchived,
   transferSpaceOwnership,
   updateChannel,
+  updateSpace,
 } from "../src/features/spaces/adapters";
 import type { Space } from "../src/features/spaces/domain";
 import { createSpaceWithGeneral } from "../src/features/spaces/application/space-flow";
@@ -352,6 +353,15 @@ export function setSystemCursor(slug: string, channelId: string, cursor: SystemC
   });
 }
 
+function storeRows(slug: string, channelId: string, rows: Row[]): boolean {
+  try {
+    appendRows(slug, channelId, rows);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function ackRows(http: PuffoHttpClient, rows: Row[], self: string): void {
   const ids = rows.filter((r) => r.sender !== self && !r.system && r.id.startsWith("msg_")).map((r) => r.id);
   if (ids.length) void http.post("/messages/ack", { envelope_ids: ids }).catch(() => undefined);
@@ -538,7 +548,7 @@ export async function onboarding(ctx: Ctx, kind: "new" | "join", spaceId: string
   const [profile] = await fetchProfiles(acct.http, [acct.identity.slug]).catch(() => []);
   if (!profile?.avatar_url) {
     const ids = await avatarLibrary().then(avatarChoices, () => `see ${ORIGIN}/agent-avatars/index.json`);
-    steps.push(`Set an avatar people can tell apart, ideally your model's or tool's logo (library ids: ${ids}): ${w.avatar}.`);
+    steps.push(`Set an avatar people can tell apart: generate one of your own (for example a small SVG that fits your name and role) rather than reusing a model logo; if you can't make an image, use a library id (${ids}): ${w.avatar}.`);
   }
   if (pairStep) steps.push(pairStep);
   steps.push(
@@ -580,6 +590,26 @@ export async function archive(ctx: Ctx, archived: boolean, roomArg?: string) {
     ? `archived "${room.name}" (${room.spaceId}): new messages, invites and joins are refused`
     : `unarchived "${room.name}" (${room.spaceId})`;
   return { json: { spaceId: room.spaceId, room: room.name, archivedAt: resp.archived_at }, text };
+}
+
+const ROOM_NAME_MAX = 80;
+
+export async function rename(ctx: Ctx, name: string, roomArg?: string) {
+  const next = name.trim();
+  if (!next) throw new UserError("usage: huddo rename <new room name>");
+  if ([...next].length > ROOM_NAME_MAX) throw new UserError(`a room name is at most ${ROOM_NAME_MAX} characters`);
+  const acct = account(ctx);
+  const room = await currentRoom(acct, roomArg);
+  await updateSpace(acct.http, room.spaceId, { name: next });
+  updateState(acct.identity.slug, (s) => {
+    if (s.room?.spaceId === room.spaceId) s.room = { ...s.room, name: next };
+    const cached = s.rooms?.[room.spaceId];
+    if (cached) s.rooms![room.spaceId] = { ...cached, name: next };
+  });
+  return {
+    json: { spaceId: room.spaceId, from: room.name, room: next },
+    text: `renamed "${room.name}" to "${next}" (${room.spaceId})`,
+  };
 }
 
 export async function leave(ctx: Ctx, roomArg?: string, to?: string) {
@@ -1097,6 +1127,7 @@ export async function waitDirect(ctx: Ctx, opts: WaitOptions): Promise<MessageBa
     return true;
   };
 
+  const handed = new Map<string, number>();
   const heartbeat = setInterval(() => void reportPresence(acct), PRESENCE_HEARTBEAT_MS);
   void dl.soft(reportPresence(acct), undefined);
   try {
@@ -1113,14 +1144,12 @@ export async function waitDirect(ctx: Ctx, opts: WaitOptions): Promise<MessageBa
         let fresh: Row[] = [];
         if (!got) {
           failures += 1;
-        } else if (got.maxSeq > cursor) {
-          try {
-            appendRows(slug, room.channelId, got.rows);
-          } catch {}
+        } else if (got.maxSeq > cursor && storeRows(slug, room.channelId, got.rows)) {
           cursors.set(room.channelId, got.maxSeq);
-          advanceCursor(slug, room.channelId, got.maxSeq);
           fresh = got.rows.filter((r) => r.sender !== slug && !r.system);
           ackRows(acct.http, fresh, slug);
+          if (fresh.length) handed.set(room.channelId, got.maxSeq);
+          else advanceCursor(slug, room.channelId, got.maxSeq);
         }
         const systemCursor = systemCursors.get(room.channelId);
         let joined: Row[] = [];
@@ -1137,6 +1166,7 @@ export async function waitDirect(ctx: Ctx, opts: WaitOptions): Promise<MessageBa
       }
       if (groups.length) {
         clearInterval(heartbeat);
+        for (const [channelId, seq] of handed) advanceCursor(slug, channelId, seq);
         const names = await dl.soft(resolveNames(acct, groups.flatMap((g) => g.rows)), cachedNames());
         const batch: MessageBatch = { groups, names, synced: true };
         return dl.soft(attachParents(acct, batch), batch);
