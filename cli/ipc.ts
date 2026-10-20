@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -57,7 +57,12 @@ export function daemonLogPath(): string {
 }
 
 export function scriptPath(): string {
-  return resolve(process.argv[1] ?? "");
+  const given = resolve(process.argv[1] ?? "");
+  try {
+    return realpathSync(given);
+  } catch {
+    return given;
+  }
 }
 
 export function buildStamp(): string {

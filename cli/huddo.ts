@@ -32,11 +32,35 @@ core:
                           unless you are already paired
   list                    rooms this identity is in (* = default room)
   use <spaceId|N>         make a room the default room
-  read [--limit N] [--room R]
-                          recent messages of the room (default 20, max 200);
-                          marks everything up to the newest as seen
-  send <text> [--room R] [--reply-to MSGID] [--file PATH ...]
-                          post a message; @slug mentions are plain text
+  read [--limit N] [--before SEQ | --after SEQ] [--room R]
+                          the room's messages (default the latest 20, max 500)
+                          from the local store, fetching what it lacks; marks
+                          everything up to the newest as seen. --before/--after
+                          page through older or newer messages and end with
+                          the command for the next page
+  search [WORDS] [--from WHO] [--since WHEN] [--until WHEN] [--has-file]
+         [--limit N] [--room R]
+                          find messages in every room (or --room): WORDS in
+                          the text or file names, WHO = slug or name, WHEN =
+                          a date or 30m/12h/3d/2w; newest 20 matches by default
+  show <msgid> [--context N] [--room R]
+                          a message with N messages around it (default 3) and
+                          its edits
+  sync [--full] [--room R]
+                          update the local store of every room (or --room);
+                          --full fetches the whole history
+  files [WORDS] [--from WHO] [--type KIND] [--limit N] [--room R]
+                          attachments in every room (or --room), newest first
+                          (default 20): WORDS in the file name, KIND = a type
+                          or extension (image, pdf, ...); shows the local path
+                          of files already downloaded
+  send <text> [--room R] [--reply-to MSGID] [--file PATH ...] [--mention WHO ...]
+                          post a message; @slug mentions are plain text, or
+                          --mention a member by display name or slug (all for
+                          everyone). The printed id and #seq confirm it was sent.
+                          Write line breaks as \\n (cmd.exe cuts real newlines)
+                          and a literal \\n as \\\\n; other backslashes are
+                          sent as typed. - reads stdin. Same for edit and whisper
   react <msgid> <emoji> [--remove] [--room R]
                           add (or remove) an emoji reaction on a message
   edit <msgid> <text> [--room R]
@@ -79,7 +103,7 @@ core:
   transfer <member>       owner only: hand the room to another member and stay in it
   archive | unarchive     owner only: lock the room (no new messages, invites or joins) or reopen it
   members                 members of the room with presence
-                          (online/busy/offline/unknown); paired accounts show as agent
+                          (online/offline/unknown); paired accounts show as agent
   kick <member>           owner only: remove a member (slug or display name)
   limits [--slow S] [--max-chars N]
                           show the room's limits; the owner sets slow mode
@@ -89,12 +113,12 @@ core:
   block <member> | unblock <member> | blocks
                           your private blocklist: a blocked member's messages
                           read as "A blocked message"
-  status <online|busy> [note]
-                          set your presence; wait reports online while it
-                          blocks and busy when it returns messages
+  status                  show whether a huddo wait is running right now
+                          (and when the last one ended) and the daemon state
   download <msgid> [--out DIR]
-                          save the attachments of a message among the room's
-                          latest 200 (default DIR: $HUDDO_HOME/downloads)
+                          save the attachments of any message in the room's
+                          history (default DIR: $HUDDO_HOME/downloads); files
+                          downloaded before are copied from the local store
   mcp                     run as an MCP server over stdio
   daemon status|stop|run  background daemon (started automatically; holds the
                           realtime connection that wait uses)
@@ -133,9 +157,18 @@ const { values: opts, positionals } = parseArgs({
     limit: { type: "string" },
     timeout: { type: "string" },
     since: { type: "string" },
+    until: { type: "string" },
+    before: { type: "string" },
+    after: { type: "string" },
+    context: { type: "string" },
+    from: { type: "string" },
+    "has-file": { type: "boolean" },
+    full: { type: "boolean" },
+    type: { type: "string" },
     "reply-to": { type: "string" },
     to: { type: "string" },
     file: { type: "string", multiple: true },
+    mention: { type: "string", multiple: true },
     out: { type: "string" },
     passphrase: { type: "string" },
     json: { type: "boolean" },
@@ -183,6 +216,7 @@ async function printOnboarded(
 function printBatch(batch: ops.MessageBatch, withRoom: boolean): void {
   if (opts.json) {
     if (batch.omitted) process.stderr.write(`${JSON.stringify({ omitted: batch.omitted })}\n`);
+    if (batch.hint) process.stderr.write(`${JSON.stringify({ hint: batch.hint })}\n`);
     for (const g of batch.groups) {
       for (const r of g.rows) process.stdout.write(`${JSON.stringify(ops.messageJson(withRoom ? g.room : null, r, batch))}\n`);
     }
@@ -192,7 +226,7 @@ function printBatch(batch: ops.MessageBatch, withRoom: boolean): void {
   if (text) process.stdout.write(`${text}\n`);
 }
 
-function num(name: "limit" | "timeout" | "since"): number | undefined {
+function num(name: "limit" | "timeout" | "since" | "before" | "after" | "context"): number | undefined {
   const raw = opts[name];
   if (raw === undefined) return undefined;
   const n = Number(raw);
@@ -270,6 +304,15 @@ async function main(): Promise<void> {
   }
 }
 
+async function daemonSummary(): Promise<{ running: boolean; detail: string }> {
+  if (!daemonEnabled()) return { running: false, detail: "off (HUDDO_DAEMON=0): every command talks to the server directly" };
+  const up = await hello(800);
+  if (!up) return { running: false, detail: "not running: commands talk to the server directly, and you show offline between waits" };
+  const st = await request("status", {}, { timeoutMs: 2_000 }).catch(() => null);
+  const realtime = st ? (st.wsConnected ? "websocket connected" : st.realtime === "polling" ? "polling" : "websocket not connected") : "status unknown";
+  return { running: true, detail: `running (${realtime})` };
+}
+
 async function daemonCommand(sub: string | undefined) {
   switch (sub) {
     case "run":
@@ -290,7 +333,6 @@ async function daemonCommand(sub: string | undefined) {
           `version:    ${String(st.version ?? "-")}`,
           `identity:   ${String(st.slug ?? "-")}`,
           `realtime:   ${st.realtime === "polling" ? "polling every 3s (this Node has no WebSocket)" : st.wsConnected ? "websocket connected" : "websocket not connected"}${st.lastError ? ` (last error: ${String(st.lastError)})` : ""}`,
-          `presence:   ${String(st.presence ?? "-")}`,
           `ipc:        ${String(st.transport ?? "-")}`,
           `rooms:      ${rooms.length}${rooms.length ? ` (${rooms.map((r) => r.name).join(", ")})` : ""}`,
           `last event: ${String(st.lastEventAt ?? "-")}`,
@@ -322,15 +364,38 @@ async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promis
       await printOnboarded(ctx, "join", await ops.join(ctx, need(args[0], "huddo join <invite-url-or-code> [--name NAME] [--avatar ID|PATH]"), opts.name, opts.avatar));
       break;
     case "list": print(await ops.list(ctx)); break;
-    case "read": printBatch(await ops.read(ctx, { room: opts.room, limit: num("limit") }), false); break;
+    case "read":
+      printBatch(await ops.read(ctx, { room: opts.room, limit: num("limit"), before: num("before"), after: num("after") }), false);
+      break;
+    case "search":
+      printBatch(
+        await ops.search(ctx, {
+          query: args.join(" "),
+          room: opts.room,
+          from: opts.from,
+          since: opts.since,
+          until: opts.until,
+          hasFile: opts["has-file"],
+          limit: num("limit"),
+        }),
+        true,
+      );
+      break;
+    case "show":
+      printBatch(await ops.show(ctx, { id: need(args[0], "huddo show <msgid>"), room: opts.room, context: num("context") }), false);
+      break;
+    case "sync": print(await ops.sync(ctx, { room: opts.room, full: opts.full })); break;
+    case "files":
+      print(await ops.files(ctx, { query: args.join(" "), room: opts.room, from: opts.from, type: opts.type, limit: num("limit") }));
+      break;
     case "send":
-      print(await ops.send(ctx, { text: args.join(" "), room: opts.room, replyTo: opts["reply-to"], files: opts.file }));
+      print(await ops.send(ctx, { text: ops.messageText(args), room: opts.room, replyTo: opts["reply-to"], files: opts.file, mentions: opts.mention }));
       break;
     case "react":
       print(await ops.react(ctx, { message: args[0], emoji: args[1], remove: opts.remove, room: opts.room }));
       break;
     case "edit":
-      print(await ops.edit(ctx, { message: args[0], text: args.slice(1).join(" "), room: opts.room }));
+      print(await ops.edit(ctx, { message: args[0], text: ops.messageText(args.slice(1)), room: opts.room }));
       break;
     case "unsend":
       print(await ops.unsend(ctx, { message: args[0], room: opts.room }));
@@ -368,7 +433,7 @@ async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promis
       break;
     }
     case "whisper":
-      print(await ops.whisper(ctx, { text: args.join(" "), to: opts.to, room: opts.room, replyTo: opts["reply-to"] }));
+      print(await ops.whisper(ctx, { text: ops.messageText(args), to: opts.to, room: opts.room, replyTo: opts["reply-to"] }));
       break;
     case "wait": {
       abortPending = true;
@@ -396,12 +461,10 @@ async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promis
     case "block": print(await ops.block(ctx, need(args.join(" "), "huddo block <member>"), true, opts.room)); break;
     case "unblock": print(await ops.block(ctx, need(args.join(" "), "huddo unblock <member>"), false, opts.room)); break;
     case "blocks": print(await ops.blocks(ctx)); break;
-    case "status": {
-      const result = await ops.status(ctx, need(args[0], "huddo status <online|busy> [note]"), args.slice(1).join(" "));
-      await notifyDaemon("presence", { slug: result.json.slug, state: result.json.state });
-      print(result);
+    case "status":
+      if (args[0]) throw new ops.UserError("usage: huddo status (takes no arguments)");
+      print(await ops.listening(ctx, await daemonSummary()));
       break;
-    }
     case "use": print(await ops.use(ctx, need(args[0], "huddo use <spaceId|N>"))); break;
     case "download":
       print(await ops.download(ctx, need(args[0], "huddo download <msgid> [--out DIR]"), { room: opts.room, outDir: opts.out }));

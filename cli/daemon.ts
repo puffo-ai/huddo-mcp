@@ -7,9 +7,11 @@ import { PRESENCE_HEARTBEAT_MS } from "../src/huddo/presence";
 import { homeDir, identityDir, loadConfig, loadState, readJson, writeJson, type Room } from "./home";
 import { getRuntime, accountFor, activeSlug, type Account, type Runtime } from "./runtime";
 import { fetchSince, latestSeqOf, rowFromEnvelope, type Row } from "./rows";
+import { appendRows, loadMeta, syncRoom } from "./store";
 import { reportPresence } from "./presence";
 import { fetchSystemRows, mergeByTime, sameCursor, type SystemCursor } from "./membership";
 import {
+  ackRows,
   advanceCursor,
   setSystemCursor,
   cachedNames,
@@ -31,8 +33,6 @@ const HEALTHY_WINDOW_MS = 60_000;
 const LOG_CAP_BYTES = 1024 * 1024;
 const INBOX_CAP = 500;
 const MAX_BACKOFF_MS = 30_000;
-
-type LiveState = "online" | "busy";
 
 interface Waiter {
   room: Room | null;
@@ -75,7 +75,6 @@ class Session {
   lastEventAt: number | null = null;
   lastOkAt: number | null = null;
   lastError: string | null = null;
-  presence: LiveState = "online";
   readonly ready: Promise<void>;
 
   constructor(private readonly rt: Runtime, readonly acct: Account) {
@@ -163,6 +162,9 @@ class Session {
       this.fetched.set(room.channelId, cursor);
       if (cursors[room.channelId] === undefined) advanceCursor(this.slug, room.channelId, cursor);
     }
+    for (const room of next.values()) {
+      if (!loadMeta(this.slug, room.channelId).seeded) void syncRoom(this.acct.http, this.slug, room.channelId).catch((e) => this.fail(e));
+    }
   }
 
   async backfillAll(): Promise<void> {
@@ -208,10 +210,13 @@ class Session {
     const work = (async () => {
       const cursor = Math.max(this.fetched.get(channelId) ?? 0, loadState(this.slug).cursors?.[channelId] ?? 0);
       try {
-        const got = await fetchSince(this.acct.http, channelId, cursor);
+        const stored = loadMeta(this.slug, channelId);
+        const from = stored.seeded && stored.maxSeq ? Math.min(cursor, stored.maxSeq) : cursor;
+        const got = await fetchSince(this.acct.http, channelId, from, stored.seeded ? Infinity : undefined);
         this.ok();
         this.synced = true;
         this.add(channelId, got.rows);
+        ackRows(this.acct.http, got.rows, this.slug);
         this.fetched.set(channelId, Math.max(got.maxSeq, cursor));
         this.persist();
       } catch (e) {
@@ -224,6 +229,11 @@ class Session {
 
   private add(channelId: string, rows: Row[]): void {
     if (!rows.length) return;
+    try {
+      appendRows(this.slug, channelId, rows);
+    } catch (e) {
+      this.fail(e);
+    }
     const list = this.inbox.get(channelId) ?? [];
     const known = new Set(list.map((r) => r.seq));
     let added = false;
@@ -285,14 +295,8 @@ class Session {
     this.persist();
   }
 
-  setPresence(state: LiveState): void {
-    if (this.presence === state) return;
-    this.presence = state;
-    this.beat();
-  }
-
   private beat(): void {
-    void reportPresence(this.acct, this.presence);
+    void reportPresence(this.acct);
   }
 
   async wait(roomArg: string | undefined, timeoutMs: number) {
@@ -311,13 +315,11 @@ class Session {
         await bounded(this.refreshRooms().catch((e) => this.fail(e)));
       }
     }
-    this.setPresence("online");
     if (!this.wsConnected) await bounded(this.backfillAll());
     for (;;) {
       const groups = this.collect(room);
       if (groups.length) {
         this.consume(room);
-        this.setPresence("busy");
         const rows = groups.flatMap((g) => g.rows);
         const names = await Promise.race([
           resolveNames(this.acct, rows).catch(() => cachedNames()),
@@ -506,7 +508,6 @@ async function serve(): Promise<void> {
           rooms: s?.roomList().map((r) => ({ spaceId: r.spaceId, name: r.name })) ?? [],
           lastEventAt: s?.lastEventAt ? new Date(s.lastEventAt).toISOString() : null,
           lastError: s?.lastError ?? null,
-          presence: s?.presence ?? null,
           log: daemonLogPath(),
           transport,
         };
@@ -514,11 +515,6 @@ async function serve(): Promise<void> {
       case "refresh": {
         const s = sync();
         if (s) await s.ready.then(() => s.refreshRooms()).then(() => s.backfillAll()).catch(() => undefined);
-        return { ok: true };
-      }
-      case "presence": {
-        const s = sync();
-        if (s && req.slug === s.slug && (req.state === "online" || req.state === "busy")) s.setPresence(req.state);
         return { ok: true };
       }
       case "wait": {

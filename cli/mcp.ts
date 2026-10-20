@@ -80,13 +80,83 @@ const TOOLS: Tool[] = [
     name: "huddo_read",
     readOnly: true,
     description: "Read recent messages of a room. Lines: #seq msgid | sender_slug (name) [tag] | time | text [attachments] [reactions] [reply_to]. Edits and unsends are their own lines: [edits msg_...] new text, [unsent msg_...]. The optional [tag] after the sender is set by Huddo: [your operator], [peer] or [operator_of: <agent>].",
-    properties: { ...roomProp, limit: { type: "number", description: "How many messages (default 20, max 200)" }, ...asProp },
+    properties: {
+      ...roomProp,
+      limit: { type: "number", description: "How many messages (default 20, max 500)" },
+      before: { type: "number", description: "Only messages with #seq below this, to page back" },
+      after: { type: "number", description: "Only messages with #seq above this, to page forward" },
+      ...asProp,
+    },
     run: async (ctx, a) => {
-      const batch = await ops.read(ctx, { room: str(a, "room"), limit: num(a, "limit") });
+      const batch = await ops.read(ctx, { room: str(a, "room"), limit: num(a, "limit"), before: num(a, "before"), after: num(a, "after") });
       const room = batch.groups[0]?.room;
       const body = ops.formatBatch(batch, false);
       return `[${room?.name} ${room?.spaceId}]\n${body || "(no messages yet)"}`;
     },
+  },
+  {
+    name: "huddo_search",
+    readOnly: true,
+    description:
+      "Search the messages of all your rooms (or one room) stored on this machine, after fetching what is new. Matches words in the text or attachment names, case-insensitively, and returns the newest matches with their room. Rooms whose older history isn't stored yet are named in the last line.",
+    properties: {
+      query: { type: "string", description: "Words to find; may be empty when a filter is given" },
+      ...roomProp,
+      from: { type: "string", description: "Only messages from this member (slug or display name)" },
+      since: { type: "string", description: "Only messages after this: a date (2026-10-19) or a span back from now (30m, 12h, 3d, 2w)" },
+      until: { type: "string", description: "Only messages before this, same format as since" },
+      has_file: { type: "boolean", description: "Only messages with attachments" },
+      limit: { type: "number", description: "How many matches (default 20, max 500)" },
+      ...asProp,
+    },
+    run: async (ctx, a) =>
+      ops.formatBatch(
+        await ops.search(ctx, {
+          query: str(a, "query"),
+          room: str(a, "room"),
+          from: str(a, "from"),
+          since: str(a, "since"),
+          until: str(a, "until"),
+          hasFile: a.has_file === true,
+          limit: num(a, "limit"),
+        }),
+        true,
+      ),
+  },
+  {
+    name: "huddo_show",
+    readOnly: true,
+    description: "Show one message with the messages around it and its edit history.",
+    properties: {
+      msgid: { type: "string", description: "Message id (msg_...)" },
+      ...roomProp,
+      context: { type: "number", description: "Messages before and after it (default 3, max 50)" },
+      ...asProp,
+    },
+    required: ["msgid"],
+    run: async (ctx, a) => ops.formatBatch(await ops.show(ctx, { id: need(a, "msgid"), room: str(a, "room"), context: num(a, "context") }), false),
+  },
+  {
+    name: "huddo_files",
+    readOnly: true,
+    description:
+      "List the attachments in your rooms (or one room), newest first, with the message they came in, their sender and, for files already downloaded, their local path. Use huddo_download with the msgid to save one.",
+    properties: {
+      query: { type: "string", description: "Words in the file name" },
+      ...roomProp,
+      from: { type: "string", description: "Only files from this member (slug or display name)" },
+      type: { type: "string", description: "A MIME type part or extension, e.g. image, pdf, png" },
+      limit: { type: "number", description: "How many files (default 20, max 500)" },
+      ...asProp,
+    },
+    run: async (ctx, a) =>
+      (await ops.files(ctx, { query: str(a, "query"), room: str(a, "room"), from: str(a, "from"), type: str(a, "type"), limit: num(a, "limit") })).text,
+  },
+  {
+    name: "huddo_sync",
+    description: "Update the messages stored on this machine for every room (or one room); full: true fetches the whole history so search covers it.",
+    properties: { ...roomProp, full: { type: "boolean", description: "Fetch the whole history, back to the start of the room" }, ...asProp },
+    run: async (ctx, a) => (await ops.sync(ctx, { room: str(a, "room"), full: a.full === true })).text,
   },
   {
     name: "huddo_send",
@@ -96,12 +166,21 @@ const TOOLS: Tool[] = [
       ...roomProp,
       reply_to: { type: "string", description: "Message id (msg_...) this replies to" },
       files: { type: "array", items: { type: "string" }, description: "Local file paths to attach (up to 10, 8 MB each)" },
+      mention: { type: "array", items: { type: "string" }, description: "Members to @mention by display name or slug (\"all\" for everyone); added to the start of the text" },
       ...asProp,
     },
     run: async (ctx, a) => {
       const files = a.files === undefined ? [] : a.files;
       if (!Array.isArray(files) || files.some((f) => typeof f !== "string")) throw new ops.UserError("files must be an array of paths");
-      const sent = await ops.send(ctx, { text: str(a, "text"), room: str(a, "room"), replyTo: str(a, "reply_to"), files: files as string[] });
+      const mention = a.mention === undefined ? [] : a.mention;
+      if (!Array.isArray(mention) || mention.some((m) => typeof m !== "string")) throw new ops.UserError("mention must be an array of names or slugs");
+      const sent = await ops.send(ctx, {
+        text: str(a, "text"),
+        room: str(a, "room"),
+        replyTo: str(a, "reply_to"),
+        files: files as string[],
+        mentions: mention as string[],
+      });
       return `${sent.text}\n${KEEP_LISTENING}`;
     },
   },
@@ -227,24 +306,9 @@ const TOOLS: Tool[] = [
     },
   },
   {
-    name: "huddo_status",
-    description: "Set your presence shown to the group: online or busy, with an optional short note (e.g. \"reviewing PR\"). huddo_wait already reports online while waiting and busy when it returns messages.",
-    properties: {
-      state: { type: "string", enum: ["online", "busy"], description: "busy while you work, online when idle" },
-      note: { type: "string", description: "Short note, max 80 chars" },
-      ...asProp,
-    },
-    required: ["state"],
-    run: async (ctx, a) => {
-      const result = await ops.status(ctx, need(a, "state"), str(a, "note"));
-      await notifyDaemon("presence", { slug: result.json.slug, state: result.json.state });
-      return result.text;
-    },
-  },
-  {
     name: "huddo_members",
     readOnly: true,
-    description: "List the members of a room with their presence: slug (name) [identity_type,role] online|busy|offline|unknown · note. identity_type is agent for an account paired with an operator.",
+    description: "List the members of a room with their presence: Name @slug [identity_type,role] online|offline|unknown. identity_type is agent for an account paired with an operator.",
     properties: { ...roomProp, ...asProp },
     run: async (ctx, a) => (await ops.members(ctx, str(a, "room"))).text,
   },
@@ -373,9 +437,9 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_download",
-    description: "Save the attachments of a message to a local directory (default: $HUDDO_HOME/downloads) and return the file paths. Existing files are never overwritten; a numbered copy is written instead.",
+    description: "Save the attachments of a message to a local directory (default: $HUDDO_HOME/downloads) and return the file paths. Works for any message in the room's history; files downloaded before come from the local store without contacting the server. Existing files are never overwritten; a numbered copy is written instead.",
     properties: {
-      msgid: { type: "string", description: "Message id (msg_...) with the attachments; must be among the room's latest 200 messages" },
+      msgid: { type: "string", description: "Message id (msg_...) with the attachments" },
       out_dir: { type: "string", description: "Directory (default: $HUDDO_HOME/downloads)" },
       ...roomProp,
       ...asProp,

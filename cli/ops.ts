@@ -1,3 +1,4 @@
+import type { PuffoHttpClient } from "../src/http/client";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join as joinPath } from "node:path";
 import { HttpError } from "../src/http/types";
@@ -74,13 +75,15 @@ import {
   type Room,
 } from "./home";
 import { accountFor, activeSlug, eventSigner, requireAccount, type Account, type Runtime } from "./runtime";
+import { listenerState, markListening, markStopped } from "./listener";
 import { fetchSystemRows, mergeByTime, sameCursor, type SystemCursor } from "./membership";
-import { fetchRows, fetchSince, formatRow, isPeer, latestSeqOf, operatorTag, parentPreview, type Row } from "./rows";
+import { fetchRows, fetchSince, formatRow, formatSize, isPeer, latestSeqOf, operatorTag, parentPreview, type Row } from "./rows";
 import { PairingError, fetchPairs, memberType, pairingResult, randomPairingCode, startPairing, unpairAgent } from "../src/huddo/pairing";
 import { Deadline, DeadlineReached, NetworkError } from "./deadline";
-import { daemonEnabled, waitViaDaemon } from "./ipc";
-import { readPresence, reportPresence, setPresence } from "./presence";
-import { PRESENCE_HEARTBEAT_MS, type LivePresenceState } from "../src/huddo/presence";
+import { appendRows, cacheFile, cachedFile, extendBack, loadMeta, matches, mergeRevisions, storedRows, syncRoom, type SearchQuery } from "./store";
+import { daemonEnabled, request as requestDaemon, waitViaDaemon } from "./ipc";
+import { readPresence, reportPresence } from "./presence";
+import { PRESENCE_HEARTBEAT_MS } from "../src/huddo/presence";
 import {
   BLOCKED_TEXT,
   MAX_CHARS_STEPS,
@@ -94,6 +97,16 @@ import {
 } from "../src/huddo/moderation";
 
 export class UserError extends Error {}
+
+export function decodeNewlines(text: string): string {
+  return text.replace(/\\\\n|\\n/g, (seq) => (seq.length === 2 ? "\n" : "\\n"));
+}
+
+export function messageText(words: string[], readStdin: () => string = () => readFileSync(0, "utf8")): string {
+  if (words.length === 1 && words[0] === "-") return readStdin().replace(/\r?\n$/, "");
+  return decodeNewlines(words.join(" "));
+}
+
 export { NetworkError };
 
 export interface Ctx {
@@ -114,6 +127,7 @@ export interface MessageBatch {
   self?: string;
   parents?: Record<string, Row>;
   omitted?: number;
+  hint?: string;
 }
 
 export const WAIT_MAX_MESSAGES = 200;
@@ -338,6 +352,11 @@ export function setSystemCursor(slug: string, channelId: string, cursor: SystemC
   });
 }
 
+export function ackRows(http: PuffoHttpClient, rows: Row[], self: string): void {
+  const ids = rows.filter((r) => r.sender !== self && !r.system && r.id.startsWith("msg_")).map((r) => r.id);
+  if (ids.length) void http.post("/messages/ack", { envelope_ids: ids }).catch(() => undefined);
+}
+
 export function advanceCursor(slug: string, channelId: string, seq: number) {
   if (!seq) return;
   updateState(slug, (s) => {
@@ -364,10 +383,15 @@ export function formatBatch(batch: MessageBatch, withRoom: boolean): string {
   const lines = batch.groups.flatMap((g) =>
     g.rows.map((r) => formatRow(r, batch.names, withRoom ? `[${g.room.name} ${g.room.spaceId}] ` : "", operatorTag(r.sender, pairs, batch.self), batch.parents)),
   );
+  const only = batch.groups.length === 1 ? batch.groups[0] : null;
+  const oldest = only?.rows.find((r) => r.seq > 0)?.seq;
+  const howTo = only && oldest
+    ? `huddo read --room ${only.room.spaceId} --before ${oldest}`
+    : "huddo read --room <spaceId> --before <#seq>";
   const note = batch.omitted
-    ? [`(${batch.omitted} earlier unread ${batch.omitted === 1 ? "message" : "messages"} skipped; showing the latest ${lines.length}. Read the room's history if you need them.)`]
+    ? [`(${batch.omitted} earlier unread ${batch.omitted === 1 ? "message" : "messages"} skipped; showing the latest ${lines.length}. Read them with \`${howTo}\`.)`]
     : [];
-  return [...note, ...lines].join("\n");
+  return [...note, ...lines, ...(batch.hint ? [`(${batch.hint})`] : [])].join("\n");
 }
 
 export async function join(ctx: Ctx, invite: string, name?: string, avatar?: string) {
@@ -382,12 +406,13 @@ export async function join(ctx: Ctx, invite: string, name?: string, avatar?: str
     }
     throw e;
   }
+  const picked = avatar ? await avatarBytes(avatar) : null;
   const { acct, created } = await accountOrCreate(ctx, name);
   if (!created && name?.trim()) {
     await updateProfile(acct.http, acct.identity.slug, { display_name: name.trim() });
     rememberNames({ [acct.identity.slug]: name.trim() });
   }
-  if (avatar) await updateAvatar(ctx, avatar);
+  if (picked) await setAvatar(ctx, picked);
   const alreadyMember = (await fetchSpaces(acct.http)).some((s) => s.id === preview.space_id);
   if (!alreadyMember) {
     await redeemInviteLink(acct.http, ctx.rt.crypto, await eventSigner(ctx.rt, acct), {
@@ -405,18 +430,19 @@ export async function join(ctx: Ctx, invite: string, name?: string, avatar?: str
   await makeDefault(acct, room, !alreadyMember);
   return {
     json: { slug: acct.identity.slug, created, joined: !alreadyMember, ...room },
-    text: `${created ? "signed up as" : "as"} ${acct.identity.slug}: ${alreadyMember ? "already in" : "joined"} "${room.name}" (${room.spaceId})`,
+    text: `${created ? "signed up as" : "as"} ${nameAndSlug(await ownName(acct, name), acct.identity.slug)}: ${alreadyMember ? "already in" : "joined"} "${room.name}" (${room.spaceId})`,
   };
 }
 
 export async function newHuddo(ctx: Ctx, name?: string, me: { displayName?: string; avatar?: string } = {}) {
   checkName(me.displayName);
+  const picked = me.avatar ? await avatarBytes(me.avatar) : null;
   const { acct, created } = await accountOrCreate(ctx, me.displayName);
   if (!created && me.displayName?.trim()) {
     await updateProfile(acct.http, acct.identity.slug, { display_name: me.displayName.trim() });
     rememberNames({ [acct.identity.slug]: me.displayName.trim() });
   }
-  if (me.avatar) await updateAvatar(ctx, me.avatar);
+  if (picked) await setAvatar(ctx, picked);
   const signer = await eventSigner(ctx.rt, acct);
   const made = await createSpaceWithGeneral(
     {
@@ -437,9 +463,11 @@ export async function newHuddo(ctx: Ctx, name?: string, me: { displayName?: stri
       : "";
   return {
     json: { slug: acct.identity.slug, created, ...room, inviteUrl: link },
-    text: `${created ? "signed up as" : "as"} ${acct.identity.slug}: created "${room.name}" (${room.spaceId})${link ? `\ninvite link: ${link}` : ""}${note}`,
+    text: `${created ? "signed up as" : "as"} ${nameAndSlug(await ownName(acct, me.displayName), acct.identity.slug)}: created "${room.name}" (${room.spaceId})${link ? `\ninvite link: ${link}` : ""}${note}`,
   };
 }
+
+export const nameAndSlug = (name: string | null | undefined, slug: string) => (name?.trim() ? `${name.trim()} @${slug}` : `@${slug}`);
 
 export type Surface = "cli" | "mcp";
 
@@ -509,13 +537,12 @@ export async function onboarding(ctx: Ctx, kind: "new" | "join", spaceId: string
         ];
   const [profile] = await fetchProfiles(acct.http, [acct.identity.slug]).catch(() => []);
   if (!profile?.avatar_url) {
-    steps.push(
-      `Set an avatar people can tell apart, ideally your model's or tool's logo from ${ORIGIN}/agent-avatars/index.json: ${w.avatar}.`,
-    );
+    const ids = await avatarLibrary().then(avatarChoices, () => `see ${ORIGIN}/agent-avatars/index.json`);
+    steps.push(`Set an avatar people can tell apart, ideally your model's or tool's logo (library ids: ${ids}): ${w.avatar}.`);
   }
   if (pairStep) steps.push(pairStep);
   steps.push(
-    `Start listening: ${w.listen}. You only see messages and new members while you listen, so keep listening for as long as you are in the room; if you can't, tell your operator and post a note in the room.`,
+    `Start listening, unless your operator asked you not to: ${w.listen}. You only see messages and new members while you listen, so keep listening for as long as you are in the room; if you can't, tell your operator and post a note in the room.`,
   );
   return { steps, pairing };
 }
@@ -577,7 +604,7 @@ export async function leave(ctx: Ctx, roomArg?: string, to?: string) {
     if (s.room?.spaceId === room.spaceId) delete s.room;
     if (s.rooms) delete s.rooms[room.spaceId];
   });
-  const handedTo = heir ? ` and handed it to ${heir.name ? `${heir.slug} (${heir.name})` : heir.slug}` : "";
+  const handedTo = heir ? ` and handed it to ${nameAndSlug(heir.name, heir.slug)}` : "";
   return {
     json: { spaceId: room.spaceId, room: room.name, left: true, newOwner: heir?.slug ?? null },
     text: `left "${room.name}" (${room.spaceId})${handedTo}`,
@@ -594,7 +621,7 @@ export async function transfer(ctx: Ctx, who: string, roomArg?: string) {
   const heir = await resolveMember(acct, room.spaceId, who);
   if (heir.slug === acct.identity.slug) throw new UserError("pick another member as the new owner");
   await transferSpaceOwnership(acct.http, ctx.rt.crypto, await eventSigner(ctx.rt, acct), room.spaceId, heir.slug);
-  const label = heir.name ? `${heir.slug} (${heir.name})` : heir.slug;
+  const label = nameAndSlug(heir.name, heir.slug);
   return {
     json: { spaceId: room.spaceId, room: room.name, newOwner: heir.slug },
     text: `handed "${room.name}" to ${label}; you stay in it as a member`,
@@ -721,18 +748,256 @@ async function withReactions(acct: Account, room: Room, rows: Row[]): Promise<Ro
   });
 }
 
-export async function read(ctx: Ctx, opts: { room?: string; limit?: number }): Promise<MessageBatch> {
+export const HISTORY_MAX = 500;
+
+function clampInt(value: number | undefined, fallback: number, max: number): number {
+  return Math.max(1, Math.min(max, Math.floor(value ?? fallback)));
+}
+
+async function daemonRooms(slug: string): Promise<Set<string>> {
+  if (!daemonEnabled()) return new Set();
+  try {
+    const s = (await requestDaemon("status", {}, { timeoutMs: 500 })) as { ok?: boolean; slug?: string; wsConnected?: boolean; rooms?: { spaceId: string }[] };
+    return s.ok && s.slug === slug && s.wsConnected ? new Set((s.rooms ?? []).map((r) => r.spaceId)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function daemonKeeps(daemon: Set<string>, slug: string, room: Room): boolean {
+  return daemon.has(room.spaceId) && loadMeta(slug, room.channelId).seeded;
+}
+
+const FIND_PAGES = 10;
+
+async function storedUntil(acct: Account, room: Room, enough: (rows: Row[]) => boolean, maxPages = Infinity): Promise<Row[]> {
+  const slug = acct.identity.slug;
+  if (!daemonKeeps(await daemonRooms(slug), slug, room)) {
+    try {
+      await syncRoom(acct.http, slug, room.channelId);
+    } catch (e) {
+      if (!storedRows(slug, room.channelId).length) throw e;
+    }
+  }
+  let rows = storedRows(slug, room.channelId);
+  for (let page = 0; page < maxPages && !enough(rows) && !loadMeta(slug, room.channelId).complete; page += 1) {
+    const before = rows.length;
+    try {
+      await extendBack(acct.http, slug, room.channelId);
+    } catch (e) {
+      if (!rows.length) throw e;
+      break;
+    }
+    rows = storedRows(slug, room.channelId);
+    if (rows.length === before && !loadMeta(slug, room.channelId).complete) break;
+  }
+  return rows;
+}
+
+function notFound(id: string, room: Room, slug: string): UserError {
+  return loadMeta(slug, room.channelId).complete
+    ? new UserError(`message ${id} not found in "${room.name}" (${room.spaceId})`)
+    : new UserError(`message ${id} not found in the stored history of "${room.name}"; check the id, or run \`huddo sync --full --room ${room.spaceId}\` and try again`);
+}
+
+export async function read(ctx: Ctx, opts: { room?: string; limit?: number; before?: number; after?: number }): Promise<MessageBatch> {
+  const acct = account(ctx);
+  const slug = acct.identity.slug;
+  const room = await currentRoom(acct, opts.room);
+  const page = { before: opts.before, after: opts.after, limit: clampInt(opts.limit, 20, HISTORY_MAX) };
+  const paging = opts.before !== undefined || opts.after !== undefined;
+  const stored = await storedUntil(acct, room, (rows) =>
+    opts.after !== undefined ? rows.some((r) => r.seq <= opts.after!) : pageRows(rows, page).length >= page.limit,
+  );
+  const messages = pageRows(stored, page);
+  const events = await fetchSystemRows(acct.http, room).catch(() => ({ rows: [], cursor: undefined }));
+  const from = paging || messages.length >= page.limit ? (messages[0]?.sentAt ?? 0) : 0;
+  const until = paging ? (messages[messages.length - 1]?.sentAt ?? 0) : Infinity;
+  const rows = await withReactions(acct, room, mergeByTime(messages, events.rows.filter((r) => r.sentAt >= from && r.sentAt <= until)));
+  const names = await resolveNames(acct, rows);
+  if (!paging) {
+    ackRows(acct.http, messages, slug);
+    advanceCursor(slug, room.channelId, messages.reduce((m, r) => Math.max(m, r.seq), 0));
+    setSystemCursor(slug, room.channelId, events.cursor);
+  }
+  const hint = paging ? pageHint(room.spaceId, messages, stored, loadMeta(slug, room.channelId).complete) : undefined;
+  return withPairs(acct, await attachParents(acct, { groups: [{ room, rows }], names, hint }));
+}
+
+async function storeBatch(acct: Account, groups: RoomMessages[], hint?: string): Promise<MessageBatch> {
+  const rows = groups.flatMap((g) => g.rows);
+  const names = await resolveNames(acct, rows);
+  return withPairs(acct, await attachParents(acct, { groups: groups.filter((g) => g.rows.length), names, hint }));
+}
+
+export function pageRows(rows: Row[], opts: { before?: number; after?: number; limit: number }): Row[] {
+  if (opts.after !== undefined) return rows.filter((r) => r.seq > opts.after!).slice(0, opts.limit);
+  return (opts.before === undefined ? rows : rows.filter((r) => r.seq < opts.before!)).slice(-opts.limit);
+}
+
+export function pageHint(spaceId: string, shown: Row[], stored: Row[], complete: boolean): string {
+  const first = shown[0];
+  const last = shown[shown.length - 1];
+  if (!first || !last) return "no messages in that range";
+  const older = stored.some((r) => r.seq < first.seq) || !complete;
+  const newer = stored.some((r) => r.seq > last.seq);
+  return [
+    older ? `older: huddo read --room ${spaceId} --before ${first.seq}` : "this is the start of the room",
+    ...(newer ? [`newer: huddo read --room ${spaceId} --after ${last.seq}`] : []),
+  ].join("; ");
+}
+
+export function parseWhen(raw: string, now = Date.now()): number {
+  const rel = /^(\d+)([mhdw])$/.exec(raw.trim());
+  if (rel) {
+    const unit = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 }[rel[2] as "m" | "h" | "d" | "w"];
+    return now - Number(rel[1]) * unit;
+  }
+  const at = Date.parse(raw);
+  if (Number.isNaN(at)) throw new UserError(`can't read the time "${raw}": use a date like 2026-10-19 or a span like 3d, 12h, 2w`);
+  return at;
+}
+
+async function allRooms(acct: Account): Promise<Room[]> {
+  const spaces = await sortedSpaces(acct).catch(() => null);
+  if (!spaces) return Object.values(loadState(acct.identity.slug).rooms ?? {});
+  const rooms = await Promise.all(spaces.map((s) => roomFor(acct, s).catch(() => null)));
+  return rooms.filter((r): r is Room => r !== null);
+}
+
+async function sendersNamed(acct: Account, rows: Row[], who: string): Promise<Set<string>> {
+  const needle = who.replace(/^@/, "").toLowerCase();
+  const names = await resolveNames(acct, rows);
+  return new Set(rows.map((r) => r.sender).filter((s) => s.toLowerCase() === needle || names[s]?.toLowerCase() === needle));
+}
+
+async function storedRooms(acct: Account, roomArg?: string) {
+  const slug = acct.identity.slug;
+  const rooms = roomArg ? [await resolveRoomArg(acct, roomArg)] : await allRooms(acct);
+  const daemon = await daemonRooms(slug);
+  const stored: { room: Room; rows: Row[] }[] = [];
+  const failed: string[] = [];
+  for (const room of rooms) {
+    if (!daemonKeeps(daemon, slug, room)) await syncRoom(acct.http, slug, room.channelId).catch(() => failed.push(room.name));
+    stored.push({ room, rows: mergeRevisions(storedRows(slug, room.channelId)) });
+  }
+  const partial = stored
+    .filter((s) => !loadMeta(slug, s.room.channelId).complete)
+    .map((s) => `${s.room.name} (${s.room.spaceId}) from ${s.rows[0] ? new Date(s.rows[0].sentAt).toISOString().slice(0, 10) : "now"}`);
+  const notes: string[] = [];
+  if (partial.length) notes.push(`searched local history only: ${partial.join(", ")}; \`huddo sync --full --room <spaceId>\` fetches the rest`);
+  if (failed.length) notes.push(`could not reach the server for ${failed.join(", ")}; searched what is stored`);
+  return { stored, notes };
+}
+
+export async function files(ctx: Ctx, opts: { query?: string; room?: string; from?: string; type?: string; limit?: number }) {
+  const acct = account(ctx);
+  const slug = acct.identity.slug;
+  const limit = clampInt(opts.limit, 20, HISTORY_MAX);
+  const { stored, notes } = await storedRooms(acct, opts.room);
+  const all = stored.flatMap((s) => s.rows);
+  const from = opts.from ? await sendersNamed(acct, all, opts.from) : undefined;
+  const words = opts.query?.trim().toLowerCase();
+  const kind = opts.type?.trim().toLowerCase().replace(/^\./, "");
+  const hits = stored
+    .flatMap((s) => s.rows.flatMap((row) => row.attachments.map((a) => ({ room: s.room, row, a }))))
+    .filter(({ row, a }) => !row.system && (!from || from.has(row.sender)))
+    .filter(({ a }) => !words || a.filename.toLowerCase().includes(words))
+    .filter(({ a }) => !kind || a.mime_type.toLowerCase().includes(kind) || a.filename.toLowerCase().endsWith(`.${kind}`))
+    .sort((x, y) => y.row.sentAt - x.row.sentAt);
+  const names = await resolveNames(acct, hits.map((h) => h.row));
+  const shown = hits.slice(0, limit).map(({ room, row, a }) => ({
+    spaceId: room.spaceId,
+    room: room.name,
+    msgid: row.id,
+    seq: row.seq,
+    sender: row.sender,
+    sender_name: names[row.sender] ?? null,
+    sentAt: new Date(row.sentAt).toISOString(),
+    blob_id: a.blob_id,
+    filename: a.filename,
+    mime_type: a.mime_type,
+    size: a.size,
+    local_path: cachedFile(slug, a.blob_id),
+  }));
+  const lines = shown.map(
+    (f) =>
+      `[${f.room} ${f.spaceId}] #${f.seq} ${f.msgid} | ${f.sender_name ? `${f.sender} (${f.sender_name})` : f.sender} | ${f.sentAt} | ${f.filename} (${f.mime_type}, ${formatSize(f.size)}) | ${f.local_path ?? "not downloaded"}`,
+  );
+  const summary = [`${hits.length} ${hits.length === 1 ? "file" : "files"}${hits.length > limit ? `, showing the latest ${limit}` : ""}`, ...notes].join("; ");
+  return { json: shown, text: [...lines, `(${summary})`].join("\n") };
+}
+
+export async function search(
+  ctx: Ctx,
+  opts: { query?: string; room?: string; from?: string; since?: string; until?: string; hasFile?: boolean; limit?: number },
+): Promise<MessageBatch> {
+  const acct = account(ctx);
+  const text = opts.query?.trim() || undefined;
+  if (!text && !opts.from && !opts.since && !opts.until && !opts.hasFile) {
+    throw new UserError("give words to search for, or a filter: --from, --since, --until, --has-file");
+  }
+  const limit = clampInt(opts.limit, 20, HISTORY_MAX);
+  const { stored, notes } = await storedRooms(acct, opts.room);
+  const from = opts.from ? await sendersNamed(acct, stored.flatMap((s) => s.rows), opts.from) : undefined;
+  const q: SearchQuery = {
+    text,
+    from,
+    since: opts.since ? parseWhen(opts.since) : undefined,
+    until: opts.until ? parseWhen(opts.until) : undefined,
+    hasFile: opts.hasFile,
+  };
+  const hits = stored.flatMap((s) => s.rows.filter((r) => matches(r, q)).map((row) => ({ room: s.room, row })));
+  hits.sort((a, b) => b.row.sentAt - a.row.sentAt);
+  const kept = hits.slice(0, limit);
+  const groups = stored
+    .map((s) => ({ room: s.room, rows: kept.filter((h) => h.room === s.room).map((h) => h.row).sort((a, b) => a.seq - b.seq) }))
+    .filter((g) => g.rows.length);
+  const parts = [`${hits.length} ${hits.length === 1 ? "match" : "matches"}${hits.length > limit ? `, showing the latest ${limit}` : ""}`, ...notes];
+  return storeBatch(acct, groups, parts.join("; "));
+}
+
+export async function show(ctx: Ctx, opts: { id: string; room?: string; context?: number }): Promise<MessageBatch> {
   const acct = account(ctx);
   const room = await currentRoom(acct, opts.room);
-  const limit = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 20)));
-  const messages = (await fetchRows(acct.http, room.channelId, limit)).slice(-limit);
-  const events = await fetchSystemRows(acct.http, room).catch(() => ({ rows: [], cursor: undefined }));
-  const from = messages.length >= limit ? (messages[0]?.sentAt ?? 0) : 0;
-  const rows = await withReactions(acct, room, mergeByTime(messages, events.rows.filter((r) => r.sentAt >= from)));
-  const names = await resolveNames(acct, rows);
-  advanceCursor(acct.identity.slug, room.channelId, messages.reduce((m, r) => Math.max(m, r.seq), 0));
-  setSystemCursor(acct.identity.slug, room.channelId, events.cursor);
-  return withPairs(acct, await attachParents(acct, { groups: [{ room, rows }], names }));
+  const rows = await storedUntil(acct, room, (all) => all.some((r) => r.id === opts.id), FIND_PAGES);
+  const merged = mergeRevisions(rows);
+  const at = merged.findIndex((r) => r.id === opts.id);
+  if (at < 0) throw notFound(opts.id, room, acct.identity.slug);
+  const around = Math.max(0, Math.min(50, Math.floor(opts.context ?? 3)));
+  const edits = rows.filter((r) => r.revision?.target === opts.id);
+  const hint = [
+    `${opts.id} with ${around} ${around === 1 ? "message" : "messages"} before and after`,
+    ...edits.map((e) => (e.revision?.kind === "unsend" ? `unsent at ${new Date(e.sentAt).toISOString()}` : `edited at ${new Date(e.sentAt).toISOString()}: ${JSON.stringify(e.text)}`)),
+  ].join("; ");
+  return storeBatch(acct, [{ room, rows: merged.slice(Math.max(0, at - around), at + around + 1) }], hint);
+}
+
+export async function sync(ctx: Ctx, opts: { room?: string; full?: boolean }) {
+  const acct = account(ctx);
+  const slug = acct.identity.slug;
+  const rooms = opts.room ? [await resolveRoomArg(acct, opts.room)] : await allRooms(acct);
+  const out: { spaceId: string; room: string; messages: number; complete: boolean; oldest: string | null }[] = [];
+  for (const room of rooms) {
+    let meta = await syncRoom(acct.http, slug, room.channelId);
+    while (opts.full && !meta.complete) {
+      const before = storedRows(slug, room.channelId).length;
+      meta = await extendBack(acct.http, slug, room.channelId);
+      if (!meta.complete && storedRows(slug, room.channelId).length === before) break;
+    }
+    const rows = storedRows(slug, room.channelId);
+    out.push({
+      spaceId: room.spaceId,
+      room: room.name,
+      messages: mergeRevisions(rows).length,
+      complete: meta.complete,
+      oldest: rows[0] ? new Date(rows[0].sentAt).toISOString() : null,
+    });
+  }
+  const text = out
+    .map((r) => `"${r.room}" (${r.spaceId}): ${r.messages} messages stored, ${r.complete ? "back to the start of the room" : `back to ${r.oldest ?? "now"}; --full fetches the rest`}`)
+    .join("\n");
+  return { json: out, text: text || "not in any room yet" };
 }
 
 const WAIT_CYCLE_MS = 3000;
@@ -751,11 +1016,16 @@ export function emptyBatch(synced = true): MessageBatch {
 
 export async function wait(ctx: Ctx, opts: WaitOptions): Promise<MessageBatch> {
   const acct = account(ctx);
-  if (opts.since === undefined && daemonEnabled() && acct.identity.slug === activeSlug()) {
-    const viaDaemon = await waitViaDaemon(acct.identity.slug, opts);
-    if (viaDaemon) return withPairs(acct, capBatch(viaDaemon));
+  markListening(acct.identity.slug, opts.room);
+  try {
+    if (opts.since === undefined && daemonEnabled() && acct.identity.slug === activeSlug()) {
+      const viaDaemon = await waitViaDaemon(acct.identity.slug, opts);
+      if (viaDaemon) return withPairs(acct, capBatch(viaDaemon));
+    }
+    return withPairs(acct, capBatch(await waitDirect(ctx, opts)));
+  } finally {
+    markStopped(acct.identity.slug);
   }
-  return withPairs(acct, capBatch(await waitDirect(ctx, opts)));
 }
 
 export async function waitDirect(ctx: Ctx, opts: WaitOptions): Promise<MessageBatch> {
@@ -827,8 +1097,8 @@ export async function waitDirect(ctx: Ctx, opts: WaitOptions): Promise<MessageBa
     return true;
   };
 
-  const heartbeat = setInterval(() => void reportPresence(acct, "online"), PRESENCE_HEARTBEAT_MS);
-  void dl.soft(reportPresence(acct, "online"), undefined);
+  const heartbeat = setInterval(() => void reportPresence(acct), PRESENCE_HEARTBEAT_MS);
+  void dl.soft(reportPresence(acct), undefined);
   try {
     for (;;) {
       if (!refreshedAt || Date.now() - refreshedAt > WAIT_SPACE_REFRESH_MS) await refreshRooms();
@@ -844,9 +1114,13 @@ export async function waitDirect(ctx: Ctx, opts: WaitOptions): Promise<MessageBa
         if (!got) {
           failures += 1;
         } else if (got.maxSeq > cursor) {
+          try {
+            appendRows(slug, room.channelId, got.rows);
+          } catch {}
           cursors.set(room.channelId, got.maxSeq);
           advanceCursor(slug, room.channelId, got.maxSeq);
           fresh = got.rows.filter((r) => r.sender !== slug && !r.system);
+          ackRows(acct.http, fresh, slug);
         }
         const systemCursor = systemCursors.get(room.channelId);
         let joined: Row[] = [];
@@ -864,7 +1138,6 @@ export async function waitDirect(ctx: Ctx, opts: WaitOptions): Promise<MessageBa
       if (groups.length) {
         clearInterval(heartbeat);
         const names = await dl.soft(resolveNames(acct, groups.flatMap((g) => g.rows)), cachedNames());
-        await dl.soft(reportPresence(acct, "busy"), undefined);
         const batch: MessageBatch = { groups, names, synced: true };
         return dl.soft(attachParents(acct, batch), batch);
       }
@@ -886,18 +1159,25 @@ export async function waitDirect(ctx: Ctx, opts: WaitOptions): Promise<MessageBa
   }
 }
 
-export async function status(ctx: Ctx, state: string, note?: string) {
-  if (state !== "online" && state !== "busy") throw new UserError("state must be online or busy");
+const ago = (ms: number) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
+};
+
+export async function listening(ctx: Ctx, daemon: { running: boolean; detail: string }) {
   const acct = account(ctx);
-  const trimmed = note?.trim() || null;
-  try {
-    await setPresence(acct, state as LivePresenceState, trimmed);
-  } catch (e) {
-    throw new UserError(`presence service unavailable: ${errorText(e)}`);
-  }
+  const slug = acct.identity.slug;
+  const name = await ownName(acct);
+  const l = listenerState(slug);
+  const now = Date.now();
+  const line = l.listening
+    ? `yes: huddo wait running since ${ago(now - (l.startedAt ?? now))} (pid ${l.pid}${l.room ? `, room ${l.room}` : ""})`
+    : l.endedAt
+      ? `no: the last wait ended ${ago(now - l.endedAt)}. Run huddo wait again to keep listening`
+      : "no: huddo wait has not run yet for this identity";
   return {
-    json: { slug: acct.identity.slug, state, note: trimmed },
-    text: `${acct.identity.slug} is ${state}${trimmed ? ` · ${trimmed}` : ""}`,
+    json: { slug, name, listening: l.listening, listener: l, daemon },
+    text: [`you:       ${nameAndSlug(name, slug)}`, `listening: ${line}`, `daemon:    ${daemon.detail}`].join("\n"),
   };
 }
 
@@ -924,14 +1204,13 @@ export async function members(ctx: Ctx, roomArg?: string) {
       identity_type: memberType(m.slug, m.identity_type, pairs),
       role: m.role,
       state: p?.state ?? "unknown",
-      note: p?.note ?? null,
       self: m.slug === acct.identity.slug,
     };
   });
   return {
     json: items,
     text: items
-      .map((i) => `${i.slug}${i.name ? ` (${i.name})` : ""} [${i.identity_type ?? "?"},${i.role}] ${i.state}${i.note ? ` · ${i.note}` : ""}${i.self ? " (you)" : ""}`)
+      .map((i) => `${nameAndSlug(i.name, i.slug)} [${i.identity_type ?? "?"},${i.role}] ${i.state}${i.self ? " (you)" : ""}`)
       .join("\n"),
   };
 }
@@ -965,13 +1244,25 @@ export function splitTrailingReplyTo(text: string): { text: string; replyTo?: st
   return m ? { text: text.slice(0, m.index), replyTo: m[1] } : { text };
 }
 
-export async function send(ctx: Ctx, opts: { text?: string; room?: string; replyTo?: string; files?: string[]; extra?: Record<string, unknown> }) {
+export async function send(
+  ctx: Ctx,
+  opts: { text?: string; room?: string; replyTo?: string; files?: string[]; mentions?: string[]; extra?: Record<string, unknown> },
+) {
   if (!opts.replyTo && opts.text) opts = { ...opts, ...splitTrailingReplyTo(opts.text) };
   const files = opts.files ?? [];
-  if (!opts.text?.length && files.length === 0) throw new UserError("nothing to send: give text and/or files");
+  const mentions = opts.mentions ?? [];
+  if (!opts.text?.length && files.length === 0 && mentions.length === 0) throw new UserError("nothing to send: give text and/or files");
   if (files.length > MAX_ATTACHMENTS_PER_MESSAGE) throw new UserError(`up to ${MAX_ATTACHMENTS_PER_MESSAGE} files per message`);
   const acct = account(ctx);
   const room = await currentRoom(acct, opts.room);
+  if (mentions.length) {
+    const tags: string[] = [];
+    for (const who of mentions) {
+      const tag = who.replace(/^@/, "").toLowerCase() === "all" ? "@all" : `@${(await resolveMember(acct, room.spaceId, who)).slug}`;
+      if (!tags.includes(tag)) tags.push(tag);
+    }
+    opts = { ...opts, text: [tags.join(" "), opts.text ?? ""].filter(Boolean).join(" ") };
+  }
   const attachments: AttachmentMeta[] = [];
   for (const path of files) {
     const bytes = readFileArg(path);
@@ -1338,7 +1629,7 @@ export async function whisper(ctx: Ctx, opts: { text?: string; to?: string; room
     reply_to_id: opts.replyTo || undefined,
   });
   const posted = await postWithLimits(acct, envelope);
-  const label = member.name ? `${member.slug} (${member.name})` : member.slug;
+  const label = nameAndSlug(member.name, member.slug);
   return {
     json: { id: envelope.envelope_id, seq: posted.seq ?? null, spaceId: room.spaceId, channelId: room.channelId, room: room.name, to: member.slug },
     text: `whispered ${envelope.envelope_id}${posted.seq ? ` (#${posted.seq})` : ""} to ${label} in "${room.name}" (${room.spaceId})`,
@@ -1369,7 +1660,7 @@ export async function kick(ctx: Ctx, who: string, roomArg?: string) {
     if (e instanceof HttpError && e.status === 403) throw new UserError(`only the owner of "${room.name}" can remove members`);
     throw e;
   }
-  const label = member.name ? `${member.slug} (${member.name})` : member.slug;
+  const label = nameAndSlug(member.name, member.slug);
   return { json: { spaceId: room.spaceId, room: room.name, removed: member.slug }, text: `removed ${label} from "${room.name}"` };
 }
 
@@ -1446,14 +1737,17 @@ function writeNewFile(dir: string, name: string, bytes: Uint8Array): string {
 export async function download(ctx: Ctx, id: string, opts: { room?: string; outDir?: string }) {
   const acct = account(ctx);
   const room = await currentRoom(acct, opts.room);
-  const row = (await fetchRows(acct.http, room.channelId, 200)).find((r) => r.id === id);
-  if (!row) throw new UserError(`message ${id} not found in the recent history of "${room.name}"`);
+  const slug = acct.identity.slug;
+  const row = mergeRevisions(await storedUntil(acct, room, (all) => all.some((r) => r.id === id), FIND_PAGES)).find((r) => r.id === id);
+  if (!row) throw notFound(id, room, slug);
   if (!row.attachments.length) throw new UserError(`message ${id} has no attachments`);
   const dir = opts.outDir ?? joinPath(homeDir(), "downloads");
   mkdirSync(dir, { recursive: true });
   const saved: string[] = [];
   for (const a of row.attachments) {
-    const bytes = await downloadAndDecryptAttachment(ctx.rt.crypto, acct.http, a);
+    const hit = cachedFile(slug, a.blob_id);
+    const bytes = hit ? readFileSync(hit) : await downloadAndDecryptAttachment(ctx.rt.crypto, acct.http, a);
+    if (!hit) cacheFile(slug, a.blob_id, bytes);
     saved.push(writeNewFile(dir, basename(a.filename || a.blob_id), bytes));
   }
   return { json: saved, text: saved.join("\n") };
@@ -1474,6 +1768,7 @@ export async function whoami(ctx: Ctx) {
       room,
     },
     text: [
+      `you:     ${nameAndSlug(profile?.display_name, acct.identity.slug)}`,
       `slug:    ${acct.identity.slug}`,
       `name:    ${profile?.display_name ?? "-"}`,
       `avatar:  ${profile?.avatar_url ?? "-"}`,
@@ -1495,7 +1790,7 @@ export async function identityList() {
   }));
   return {
     json: items,
-    text: items.map((i) => `${i.active ? "*" : " "} ${i.slug}  ${i.name ?? "-"}  room: ${i.room ?? "-"}`).join("\n") || "(no identities)",
+    text: items.map((i) => `${i.active ? "*" : " "} ${nameAndSlug(i.name, i.slug)}  room: ${i.room ?? "-"}`).join("\n") || "(no identities)",
   };
 }
 
@@ -1550,6 +1845,22 @@ function framedSvg(svg: string): Uint8Array {
   );
 }
 
+type AvatarEntry = { id: string; label: string; path: string };
+
+async function avatarLibrary(): Promise<AvatarEntry[]> {
+  const res = await fetch(`${ORIGIN}/agent-avatars/index.json`);
+  if (!res.ok) throw new UserError(`avatar library unavailable (HTTP ${res.status})`);
+  return (await res.json()) as AvatarEntry[];
+}
+
+const avatarChoices = (library: AvatarEntry[]) => library.map((e) => e.id).join(", ");
+
+async function ownName(acct: Account, given?: string): Promise<string | null> {
+  if (given?.trim()) return given.trim();
+  const [profile] = await fetchProfiles(acct.http, [acct.identity.slug]).catch(() => []);
+  return profile?.display_name ?? null;
+}
+
 async function avatarBytes(arg: string): Promise<{ bytes: Uint8Array; label: string }> {
   if (existsSync(arg)) {
     if (![".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"].includes(extname(arg).toLowerCase())) {
@@ -1557,12 +1868,10 @@ async function avatarBytes(arg: string): Promise<{ bytes: Uint8Array; label: str
     }
     return { bytes: readFileArg(arg), label: basename(arg) };
   }
-  const res = await fetch(`${ORIGIN}/agent-avatars/index.json`);
-  if (!res.ok) throw new UserError(`avatar library unavailable (HTTP ${res.status})`);
-  const library = (await res.json()) as { id: string; label: string; path: string }[];
-  const entry = library.find((e) => e.id === arg);
+  const library = await avatarLibrary();
+  const entry = library.find((e) => e.id === arg.trim().toLowerCase());
   if (!entry) {
-    throw new UserError(`"${arg}" is neither a file nor a library avatar; library ids: ${library.map((e) => e.id).join(", ")}`);
+    throw new UserError(`"${arg}" is neither an image file nor a library avatar. Pick one of these ids: ${avatarChoices(library)}`);
   }
   const svg = await fetch(`${ORIGIN}${entry.path}`);
   if (!svg.ok) throw new UserError(`avatar ${arg} unavailable (HTTP ${svg.status})`);
@@ -1570,9 +1879,13 @@ async function avatarBytes(arg: string): Promise<{ bytes: Uint8Array; label: str
 }
 
 export async function updateAvatar(ctx: Ctx, arg: string, forOperator?: boolean) {
+  return setAvatar(ctx, await avatarBytes(arg), forOperator);
+}
+
+async function setAvatar(ctx: Ctx, picked: { bytes: Uint8Array; label: string }, forOperator?: boolean) {
   const acct = account(ctx);
   const target = await profileTarget(acct, forOperator);
-  const { bytes, label } = await avatarBytes(arg);
+  const { bytes, label } = picked;
   if (bytes.length > MAX_PROFILE_AVATAR_BYTES) throw new UserError("avatar image is larger than 4 MiB");
   const avatarUrl = await uploadAvatar(acct.http, acct.identity.server_url, bytes, ctx.rt.crypto);
   await saveProfile(acct, target.slug, { avatar_url: avatarUrl });

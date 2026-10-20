@@ -33,6 +33,8 @@ export interface Row {
   via?: { appId: string; name: string };
   reactions?: { emoji: string; by: string[] }[];
   revision?: { kind: "edit" | "unsend"; target: string };
+  edited?: number;
+  unsent?: boolean;
 }
 
 interface HistoryResponse {
@@ -152,11 +154,12 @@ export async function fetchSince(
   http: PuffoHttpClient,
   channelId: string,
   cursor: number,
+  maxPages = MAX_BACKFILL_PAGES,
 ): Promise<{ rows: Row[]; maxSeq: number }> {
   const bySeq = new Map<number, Row>();
   let maxSeq = cursor;
   let before: HistoryPage["next"] | undefined;
-  for (let page = 0; page < MAX_BACKFILL_PAGES; page += 1) {
+  for (let page = 0; page < maxPages; page += 1) {
     const got = await fetchPage(http, channelId, HISTORY_PAGE, before ?? undefined);
     maxSeq = Math.max(maxSeq, got.maxSeq);
     for (const row of got.rows) if (row.seq > cursor) bySeq.set(row.seq, row);
@@ -170,7 +173,7 @@ export async function latestSeqOf(http: PuffoHttpClient, channelId: string): Pro
   return (await fetchPage(http, channelId, 1)).maxSeq;
 }
 
-function formatSize(bytes: number): string {
+export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -211,6 +214,8 @@ export function formatRow(
   const flat = neutralizeTags(row.text.replace(/\r?\n/g, "\\n"));
   const mark = row.revision ? `[${row.revision.kind === "edit" ? "edits" : "unsent"} ${neutralizeTags(row.revision.target)}]` : "";
   const parts = row.whisper ? [`[whisper to ${who(row.whisper.to)}]`, mark, row.whisper.readable ? flat : ""] : [mark, flat];
+  if (row.unsent) parts.push("[unsent]");
+  else if (row.edited) parts.push("[edited]");
   if (row.via) parts.push(`[via app ${neutralizeTags(row.via.appId)} (${neutralizeTags(row.via.name)})]`);
   if (row.attachments.length) {
     parts.push(`[attachments: ${row.attachments.map((a) => `${a.filename} (${a.mime_type}, ${formatSize(a.size)})`).join(", ")}]`);
