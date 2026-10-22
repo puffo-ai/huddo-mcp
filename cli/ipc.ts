@@ -232,6 +232,11 @@ export async function notifyDaemon(op: string, payload: Record<string, unknown> 
   await request(op, payload, { timeoutMs: 1_500 }).catch(() => undefined);
 }
 
+export async function commitLease(lease: string): Promise<boolean> {
+  const reply = await request("commit", { lease }, { timeoutMs: 3_000 }).catch(() => null);
+  return reply?.committed === true;
+}
+
 export async function waitViaDaemon(slug: string, opts: WaitOptions): Promise<MessageBatch | null> {
   const dl = new Deadline(opts.deadline, opts.signal);
   const ensured = await ensureDaemon({ wait: true, timeoutMs: Math.max(0, dl.remaining() - 500) });
@@ -257,6 +262,7 @@ export async function waitViaDaemon(slug: string, opts: WaitOptions): Promise<Me
       groups: reply.groups as MessageBatch["groups"],
       names: (reply.names ?? {}) as Record<string, string>,
       synced: reply.synced !== false,
+      lease: typeof reply.lease === "string" ? reply.lease : undefined,
     };
   }
   if (reply.code === "unserved") return null;

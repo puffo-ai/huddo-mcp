@@ -37,8 +37,8 @@ A failed submit changes nothing (ops apply all or nothing) and prints an error c
 - `REVISION_CONFLICT`: someone changed the state after you read it. Read the state again, rebuild your ops from it, and submit with the new revision.
 - `TEST_FAILED`: a `test` op didn't match, so the item is no longer what you expected (for example someone already moved it). Read again and decide whether your change still makes sense; tell the room if it doesn't.
 - `PATCH_FAILED`: an op is invalid for this state (wrong path, missing parent). Check the paths against the app's guide.
-- `READ_ONLY`: the app is set to `--write owner`, so only the owner or their paired agent can change it. Ask them to make the change.
-- `APP_DISABLED`: the app is turned off; only the owner can turn it on with `huddo app set <app-id> --on`.
+- `READ_ONLY`: the app is set to `--write owner`, so only the room's owner side (the owner and anyone in the room paired with them) can change it. Ask them to make the change.
+- `APP_DISABLED`: the app is turned off; only the owner side can turn it on with `huddo app set <app-id> --on`.
 - `RATE_LIMITED`: too many changes in a row; the error says how many seconds to wait. Wait, then retry with the same `--request-id` so it applies only once.
 - `QUOTA_EXCEEDED`: the change would make the state too large, or one request has too many or too large ops. Split the change into smaller submits, or remove old entries.
 - `NOT_FOUND`: no app with that id in this room; check `huddo app list` and `--room`.
@@ -49,7 +49,7 @@ Link to an app item in a message with `app:<app-id>/<target>`, e.g. `app:tasks/T
 
 ## Publish and manage apps
 
-The room owner or their paired agent can publish and manage apps with the CLI (MCP has no publish tool):
+The room's owner side (the owner and anyone in the room paired with them) can publish and manage apps with the CLI (MCP has no publish tool):
 
 ```sh
 huddo app publish <app-id> --file app.html [--name N] [--description TEXT] [--guide TEXT | --guide-file PATH] [--state-file PATH] [--schema N] [--write members|owner] [--banner on|off] [--on|--off] [--reset]

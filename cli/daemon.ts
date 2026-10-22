@@ -4,7 +4,7 @@ import { createServer, connect, type Server, type Socket } from "node:net";
 import { join, resolve } from "node:path";
 import { transportSigningPort } from "../src/application/runtime/transport-signing-port";
 import { PRESENCE_HEARTBEAT_MS } from "../src/huddo/presence";
-import { homeDir, identityDir, loadConfig, loadState, readJson, writeJson, type Room } from "./home";
+import { acquireProcessLock, homeDir, identityDir, loadConfig, loadState, readJson, releaseProcessLock, writeJson, type Room } from "./home";
 import { getRuntime, accountFor, activeSlug, type Account, type Runtime } from "./runtime";
 import { fetchSince, latestSeqOf, rowFromEnvelope, type Row } from "./rows";
 import { appendRows, loadMeta, syncRoom } from "./store";
@@ -56,6 +56,17 @@ function log(message: string): void {
   } catch {}
 }
 
+export function readyRows(list: Row[], cursor: number, complete: number): Row[] {
+  return list.filter((row) => row.seq > cursor && row.seq <= complete);
+}
+
+const LEASE_MS = 60_000;
+
+interface Lease {
+  rooms: Map<string, { upTo: number; events: Row[]; eventCursor: SystemCursor | undefined }>;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 class Session {
   readonly slug: string;
   private rooms = new Map<string, Room>();
@@ -64,6 +75,7 @@ class Session {
   private eventFetched = new Map<string, SystemCursor>();
   private pendingEvents = new Map<string, Row[]>();
   private waiters = new Set<Waiter>();
+  private leases = new Map<string, Lease>();
   private ws: WebSocket | null = null;
   private wsBackoff = 1_000;
   private timers: ReturnType<typeof setTimeout>[] = [];
@@ -217,8 +229,11 @@ class Session {
         this.synced = true;
         if (!this.add(channelId, got.rows)) return;
         ackRows(this.acct.http, got.rows, this.slug);
-        this.fetched.set(channelId, Math.max(got.maxSeq, cursor));
+        const before = this.fetched.get(channelId) ?? 0;
+        const after = Math.max(got.maxSeq, cursor, before);
+        this.fetched.set(channelId, after);
         this.persist();
+        if (after > before) for (const w of [...this.waiters]) w.resolve();
       } catch (e) {
         this.fail(e);
       }
@@ -243,7 +258,6 @@ class Session {
       list.push(row);
       known.add(row.seq);
       added = true;
-      this.fetched.set(channelId, Math.max(this.fetched.get(channelId) ?? 0, row.seq));
     }
     if (!added) return true;
     list.sort((a, b) => a.seq - b.seq);
@@ -277,8 +291,8 @@ class Session {
     const cursors = loadState(this.slug).cursors ?? {};
     const groups: RoomMessages[] = [];
     for (const r of room ? [room] : this.roomList()) {
-      const cursor = cursors[r.channelId] ?? 0;
-      const unread = (this.inbox.get(r.channelId) ?? []).filter((row) => row.seq > cursor);
+      const cursor = Math.max(cursors[r.channelId] ?? 0, this.leasedUpTo(r.channelId));
+      const unread = readyRows(this.inbox.get(r.channelId) ?? [], cursor, this.fetched.get(r.channelId) ?? 0);
       const fresh = unread.filter((row) => row.sender !== this.slug && !row.system);
       const events = this.pendingEvents.get(r.channelId) ?? [];
       if (fresh.length || events.length) groups.push({ room: r, rows: mergeByTime(fresh, events) });
@@ -286,15 +300,67 @@ class Session {
     return groups;
   }
 
-  private consume(room: Room | null): void {
+  private leasedUpTo(channelId: string): number {
+    let upTo = 0;
+    for (const lease of this.leases.values()) upTo = Math.max(upTo, lease.rooms.get(channelId)?.upTo ?? 0);
+    return upTo;
+  }
+
+  private readyMax(channelId: string): number {
+    return readyRows(this.inbox.get(channelId) ?? [], 0, this.fetched.get(channelId) ?? 0).reduce((m, row) => Math.max(m, row.seq), 0);
+  }
+
+  private consumeIdle(room: Room | null): void {
     for (const r of room ? [room] : this.roomList()) {
-      const list = this.inbox.get(r.channelId) ?? [];
-      const max = list.reduce((m, row) => Math.max(m, row.seq), 0);
+      if (this.leasedUpTo(r.channelId)) continue;
+      const max = this.readyMax(r.channelId);
       if (max) advanceCursor(this.slug, r.channelId, max);
       this.pendingEvents.delete(r.channelId);
       setSystemCursor(this.slug, r.channelId, this.eventFetched.get(r.channelId));
     }
     this.persist();
+  }
+
+  private lease(room: Room | null): string {
+    const id = randomBytes(12).toString("hex");
+    const rooms: Lease["rooms"] = new Map();
+    for (const r of room ? [room] : this.roomList()) {
+      const upTo = Math.max(this.readyMax(r.channelId), this.leasedUpTo(r.channelId));
+      const events = this.pendingEvents.get(r.channelId) ?? [];
+      this.pendingEvents.delete(r.channelId);
+      rooms.set(r.channelId, { upTo, events, eventCursor: this.eventFetched.get(r.channelId) });
+    }
+    const timer = setTimeout(() => this.release(id), LEASE_MS);
+    timer.unref?.();
+    this.leases.set(id, { rooms, timer });
+    return id;
+  }
+
+  commit(id: string): boolean {
+    const lease = this.leases.get(id);
+    if (!lease) return false;
+    clearTimeout(lease.timer);
+    this.leases.delete(id);
+    for (const [channelId, { upTo, eventCursor }] of lease.rooms) {
+      if (upTo) advanceCursor(this.slug, channelId, upTo);
+      setSystemCursor(this.slug, channelId, eventCursor);
+    }
+    this.persist();
+    return true;
+  }
+
+  release(id: string): void {
+    const lease = this.leases.get(id);
+    if (!lease) return;
+    clearTimeout(lease.timer);
+    this.leases.delete(id);
+    for (const [channelId, { events }] of lease.rooms) {
+      if (!events.length) continue;
+      const pending = this.pendingEvents.get(channelId) ?? [];
+      const known = new Set(pending.map((r) => r.id));
+      this.pendingEvents.set(channelId, [...events.filter((r) => !known.has(r.id)), ...pending]);
+    }
+    for (const w of [...this.waiters]) w.resolve();
   }
 
   private beat(): void {
@@ -321,15 +387,15 @@ class Session {
     for (;;) {
       const groups = this.collect(room);
       if (groups.length) {
-        this.consume(room);
+        const lease = this.lease(room);
         const rows = groups.flatMap((g) => g.rows);
         const names = await Promise.race([
           resolveNames(this.acct, rows).catch(() => cachedNames()),
           new Promise<Record<string, string>>((r) => setTimeout(() => r(cachedNames()), Math.max(0, Math.min(2_000, deadline - Date.now())))),
         ]);
-        return { groups, names, synced: true };
+        return { groups, names, synced: true, lease };
       }
-      this.consume(room);
+      this.consumeIdle(room);
       const left = deadline - Date.now();
       if (left <= 0) {
         if (this.failing()) throw new NetworkErrorReply(this.lastError ?? "not connected to the Huddo server");
@@ -531,6 +597,10 @@ async function serve(): Promise<void> {
           return { ok: false, code: e instanceof UserError ? "user" : "network", error: errorText(e) };
         }
       }
+      case "commit": {
+        const s = sync();
+        return { ok: true, committed: !!s && typeof req.lease === "string" && s.commit(req.lease) };
+      }
       case "stop":
         setTimeout(shutdown, 50);
         return { ok: true, pid: process.pid };
@@ -562,6 +632,7 @@ async function serve(): Promise<void> {
       handle(req).then(
         (reply) => {
           if (!socket.destroyed) socket.end(`${JSON.stringify(reply)}\n`);
+          else if (typeof reply.lease === "string") session?.release(reply.lease);
         },
         (e) => {
           if (!socket.destroyed) socket.end(`${JSON.stringify({ ok: false, error: errorText(e) })}\n`);
@@ -571,21 +642,28 @@ async function serve(): Promise<void> {
     socket.on("error", () => undefined);
   });
 
+  const lockPath = join(home, "daemon.lock");
   function shutdown(): void {
     log("stopping");
     session?.stop();
     server.close();
     if (transport === "unix") rmSync(endpoint, { force: true });
     rmSync(join(home, "daemon.json"), { force: true });
+    releaseProcessLock(lockPath);
     setTimeout(() => process.exit(0), 100);
   }
 
+  if (!acquireProcessLock(lockPath)) {
+    log("another daemon is already running");
+    return;
+  }
   const infoPath = join(home, "daemon.json");
   const existing = readJson<{ transport?: string; port?: number; token?: string; pid?: number }>(infoPath);
   if (existing?.transport === "tcp" && existing.pid !== process.pid) {
     const reply = await requestIpc("hello", {}, { timeoutMs: 800 }).catch(() => null);
     if (reply?.ok) {
       log("another daemon is already running");
+      releaseProcessLock(lockPath);
       return;
     }
   }
@@ -614,6 +692,7 @@ async function serve(): Promise<void> {
       });
       if (alive) {
         log("another daemon is already running");
+        releaseProcessLock(lockPath);
         return;
       }
       rmSync(endpoint, { force: true });
@@ -624,6 +703,7 @@ async function serve(): Promise<void> {
       const err = e as NodeJS.ErrnoException;
       if (err.code === "EADDRINUSE") {
         log("another daemon is already running");
+        releaseProcessLock(lockPath);
         process.exit(0);
       }
       localError = `${transport === "pipe" ? "named pipe" : "unix socket"}: ${err.message}`;

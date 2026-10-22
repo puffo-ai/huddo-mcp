@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -32,6 +32,110 @@ export function writeJson(path: string, value: unknown): void {
   renameSync(tmp, path);
 }
 
+const LOCK_STALE_MS = 10_000;
+const heldLocks = new Set<string>();
+
+function pidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function lockHolder(lock: string): number | null {
+  try {
+    return Number.parseInt(readFileSync(lock, "utf8"), 10);
+  } catch {
+    return null;
+  }
+}
+
+function lockAge(lock: string): number | null {
+  try {
+    return Date.now() - statSync(lock).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+function tryCreateLock(lock: string): boolean {
+  try {
+    const fd = openSync(lock, "wx", 0o600);
+    try {
+      writeSync(fd, String(process.pid));
+    } finally {
+      closeSync(fd);
+    }
+    return true;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "EEXIST" || code === "EPERM" || code === "EACCES" || code === "EBUSY") return false;
+    throw e;
+  }
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function deadOrStale(lock: string, maxAge: number | null): boolean {
+  const holder = lockHolder(lock);
+  const age = lockAge(lock);
+  if (age === null) return false;
+  if (holder === null || Number.isNaN(holder)) return age > 1_000;
+  if (holder !== process.pid && !pidAlive(holder)) return true;
+  return maxAge !== null && age > maxAge;
+}
+
+function breakIfStale(lock: string, maxAge: number | null): void {
+  const breaker = `${lock}.break`;
+  if (!tryCreateLock(breaker)) {
+    const age = lockAge(breaker);
+    if (age !== null && age > LOCK_STALE_MS) rmSync(breaker, { force: true });
+    return;
+  }
+  try {
+    if (deadOrStale(lock, maxAge)) rmSync(lock, { force: true });
+  } finally {
+    rmSync(breaker, { force: true });
+  }
+}
+
+export function withFileLock<T>(path: string, work: () => T): T {
+  const lock = `${path}.lock`;
+  if (heldLocks.has(lock)) return work();
+  ensureDir(dirname(path));
+  while (!tryCreateLock(lock)) {
+    if (deadOrStale(lock, LOCK_STALE_MS)) breakIfStale(lock, LOCK_STALE_MS);
+    else sleepSync(5);
+  }
+  heldLocks.add(lock);
+  try {
+    return work();
+  } finally {
+    heldLocks.delete(lock);
+    rmSync(lock, { force: true });
+  }
+}
+
+export function acquireProcessLock(lock: string): boolean {
+  ensureDir(dirname(lock));
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (tryCreateLock(lock)) return true;
+    if (lockHolder(lock) === process.pid) return true;
+    if (!deadOrStale(lock, null)) return false;
+    breakIfStale(lock, null);
+  }
+  return false;
+}
+
+export function releaseProcessLock(lock: string): void {
+  if (lockHolder(lock) === process.pid) rmSync(lock, { force: true });
+}
+
 export function removeFile(path: string): void {
   rmSync(path, { force: true });
 }
@@ -57,10 +161,12 @@ export function loadConfig(): HomeConfig {
 }
 
 export function updateConfig(patch: (c: HomeConfig) => void): HomeConfig {
-  const config = loadConfig();
-  patch(config);
-  writeJson(configPath(), config);
-  return config;
+  return withFileLock(configPath(), () => {
+    const config = loadConfig();
+    patch(config);
+    writeJson(configPath(), config);
+    return config;
+  });
 }
 
 export interface Room {
@@ -85,8 +191,10 @@ export function loadState(slug: string): IdentityState {
 }
 
 export function updateState(slug: string, patch: (s: IdentityState) => void): IdentityState {
-  const state = loadState(slug);
-  patch(state);
-  writeJson(statePath(slug), state);
-  return state;
+  return withFileLock(statePath(slug), () => {
+    const state = loadState(slug);
+    patch(state);
+    writeJson(statePath(slug), state);
+    return state;
+  });
 }

@@ -65,14 +65,14 @@ Members have a status, shown on their avatars in the browser: green = online, gr
 
 ### Owners
 
-The owner has admin access to the room:
+The owner side (the owner and everyone in the room paired with them) has admin access:
 
 - Rename the room: `huddo_rename` (at most 80 characters).
 - Set slow mode and the message length cap with `huddo_limits` (anyone can read them). `huddo_send` waits out up to 10s of slow mode itself; longer waits and over-length messages fail with the reason.
 - Archive or reopen the room: `huddo_archive`.
 - Remove a member: `huddo_kick`.
 
-Ownership can be transferred to another member, a person or an agent: `huddo_transfer` (`to`); you stay as a member. The owner can't leave the room without transferring ownership: `huddo_leave` with `to` hands the room over and leaves in one step.
+Only the owner can transfer ownership to another member, a person or an agent: `huddo_transfer` (`to`); you stay as a member. The owner can't leave the room without transferring ownership: `huddo_leave` with `to` hands the room over and leaves in one step.
 
 ## Chat
 

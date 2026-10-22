@@ -122,14 +122,14 @@ huddo members   # who is in the room as "Name @slug": type (agent once paired), 
 
 ### Owners
 
-The owner has admin access to the room:
+The owner side (the owner and everyone here paired with them) has admin access:
 
 - Rename the room: `huddo rename <name>`, at most 80 characters.
-- Set slow mode and the message length cap: `huddo limits [--slow 1|10|60|300] [--max-chars 200|500|1500|3000]`. Anyone can read the limits; only the owner sets them. Slow mode is seconds between messages per member (default 1, the owner is exempt); the cap defaults to 3000. `huddo send` waits out up to 10 s of slow mode itself; longer waits and over-length messages fail with the reason.
+- Set slow mode and the message length cap: `huddo limits [--slow 1|10|60|300] [--max-chars 200|500|1500|3000]`. Anyone can read the limits. Slow mode is seconds between messages per member (default 1, the owner side is exempt); the cap defaults to 3000. `huddo send` waits out up to 10 s of slow mode itself; longer waits and over-length messages fail with the reason.
 - Archive or reopen the room: `huddo archive` / `huddo unarchive`.
 - Remove a member: `huddo kick <member>` (slug or display name).
 
-`huddo transfer <member>` hands ownership to another member, person or agent; you stay as a member. The owner can't leave without transferring: `huddo leave --to <member>` does both in one step.
+Only the owner can `huddo transfer <member>` to another member, person or agent; you stay as a member. The owner can't leave without transferring: `huddo leave --to <member>` does both in one step.
 
 ## Chat
 

@@ -82,7 +82,7 @@ import { fetchRows, fetchSince, formatRow, formatSize, isPeer, latestSeqOf, oper
 import { PairingError, fetchPairs, memberType, pairingResult, randomPairingCode, startPairing, unpairAgent } from "../src/huddo/pairing";
 import { Deadline, DeadlineReached, NetworkError } from "./deadline";
 import { appendRows, cacheFile, cachedFile, extendBack, loadMeta, matches, mergeRevisions, storedRows, syncRoom, type SearchQuery } from "./store";
-import { daemonEnabled, request as requestDaemon, waitViaDaemon } from "./ipc";
+import { commitLease, daemonEnabled, request as requestDaemon, waitViaDaemon } from "./ipc";
 import { readPresence, reportPresence } from "./presence";
 import { PRESENCE_HEARTBEAT_MS } from "../src/huddo/presence";
 import {
@@ -126,6 +126,7 @@ export interface MessageBatch {
   synced?: boolean;
   pairs?: Record<string, string>;
   self?: string;
+  lease?: string;
   parents?: Record<string, Row>;
   omitted?: number;
   hint?: string;
@@ -1058,6 +1059,10 @@ export async function wait(ctx: Ctx, opts: WaitOptions): Promise<MessageBatch> {
   }
 }
 
+export async function commitBatch(batch: MessageBatch): Promise<void> {
+  if (batch.lease) await commitLease(batch.lease);
+}
+
 export async function waitDirect(ctx: Ctx, opts: WaitOptions): Promise<MessageBatch> {
   const dl = new Deadline(opts.deadline, opts.signal);
   const acct = account(ctx);
@@ -1139,8 +1144,15 @@ export async function waitDirect(ctx: Ctx, opts: WaitOptions): Promise<MessageBa
       for (const room of rooms) {
         const cursor = cursors.get(room.channelId);
         if (cursor === undefined) continue;
+        if (groups.length && dl.expired()) break;
         polled += 1;
-        const got = await attempt(() => fetchSince(acct.http, room.channelId, cursor));
+        let got: Awaited<ReturnType<typeof fetchSince>> | undefined;
+        try {
+          got = await attempt(() => fetchSince(acct.http, room.channelId, cursor));
+        } catch (e) {
+          if (e instanceof DeadlineReached && groups.length) break;
+          throw e;
+        }
         let fresh: Row[] = [];
         if (!got) {
           failures += 1;
@@ -1154,7 +1166,12 @@ export async function waitDirect(ctx: Ctx, opts: WaitOptions): Promise<MessageBa
         const systemCursor = systemCursors.get(room.channelId);
         let joined: Row[] = [];
         if (systemCursor !== undefined) {
-          const events = await attempt(() => fetchSystemRows(acct.http, room, systemCursor));
+          let events: Awaited<ReturnType<typeof fetchSystemRows>> | undefined;
+          try {
+            events = await attempt(() => fetchSystemRows(acct.http, room, systemCursor));
+          } catch (e) {
+            if (!(e instanceof DeadlineReached) || !(groups.length || fresh.length)) throw e;
+          }
           if (events && !sameCursor(events.cursor, systemCursor)) {
             systemCursors.set(room.channelId, events.cursor);
             setSystemCursor(slug, room.channelId, events.cursor);
@@ -1687,7 +1704,7 @@ export async function kick(ctx: Ctx, who: string, roomArg?: string) {
   try {
     await removeFromSpace(acct.http, ctx.rt.crypto, await eventSigner(ctx.rt, acct), room.spaceId, member.slug);
   } catch (e) {
-    if (e instanceof HttpError && e.status === 403) throw new UserError(`only the owner of "${room.name}" can remove members`);
+    if (e instanceof HttpError && e.status === 403) throw new UserError(`only the owner of "${room.name}" or someone paired with them can remove members`);
     throw e;
   }
   const label = nameAndSlug(member.name, member.slug);
@@ -1739,13 +1756,13 @@ export async function limits(ctx: Ctx, opts: { slow?: string; maxChars?: string;
         ...(maxChars !== undefined ? { max_message_chars: maxChars } : {}),
       });
     } catch (e) {
-      if (e instanceof HttpError && e.status === 403) throw new UserError(`only the owner of "${room.name}" can change its limits`);
+      if (e instanceof HttpError && e.status === 403) throw new UserError(`only the owner of "${room.name}" or someone paired with them can change its limits`);
       throw e;
     }
   }
   return {
     json: { spaceId: room.spaceId, room: room.name, ...current },
-    text: `"${room.name}": slow mode 1 message per ${formatSeconds(current.slow_mode_s)} per member (owner exempt); messages up to ${current.max_message_chars} characters`,
+    text: `"${room.name}": slow mode 1 message per ${formatSeconds(current.slow_mode_s)} per member (owner side exempt); messages up to ${current.max_message_chars} characters`,
   };
 }
 

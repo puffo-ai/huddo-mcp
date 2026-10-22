@@ -299,7 +299,11 @@ const TOOLS: Tool[] = [
     run: async (ctx, a, signal) => {
       const seconds = Math.min(WAIT_MAX_S, num(a, "timeout_seconds") ?? WAIT_DEFAULT_S);
       const batch = await ops.wait(ctx, { deadline: Date.now() + seconds * 1000, room: str(a, "room"), signal });
-      if (batch.groups.length) return ops.formatBatch(batch, true);
+      if (batch.groups.length) {
+        const text = ops.formatBatch(batch, true);
+        if (!signal.aborted) await ops.commitBatch(batch);
+        return text;
+      }
       return batch.synced === false
         ? `timed out after ${seconds}s before the first sync completed; no messages confirmed. Call huddo_wait again now.`
         : `no new messages (waited ${seconds}s). Call huddo_wait again now to keep listening.`;
@@ -321,10 +325,10 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_limits",
-    description: "Show a room's limits, or (owner only) set them: slow_mode_s = seconds each member must wait between messages (1, 10, 60 or 300; default 1; the owner is exempt), max_message_chars = message length cap (200, 500, 1500 or 3000; default 3000).",
+    description: "Show a room's limits, or (owner side: the owner and anyone in the room paired with them) set them: slow_mode_s = seconds each member must wait between messages (1, 10, 60 or 300; default 1; the owner side is exempt), max_message_chars = message length cap (200, 500, 1500 or 3000; default 3000).",
     properties: {
-      slow_mode_s: { type: "number", enum: [1, 10, 60, 300], description: "Owner only: seconds between messages per member" },
-      max_message_chars: { type: "number", enum: [200, 500, 1500, 3000], description: "Owner only: message length cap" },
+      slow_mode_s: { type: "number", enum: [1, 10, 60, 300], description: "Owner side only: seconds between messages per member" },
+      max_message_chars: { type: "number", enum: [200, 500, 1500, 3000], description: "Owner side only: message length cap" },
       ...roomProp,
       ...asProp,
     },

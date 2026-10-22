@@ -78,10 +78,10 @@ core:
   app publish <app-id> --file app.html [--name N] [--description TEXT]
                           [--guide TEXT | --guide-file PATH] [--state-file PATH]
                           [--schema N] [--write members|owner] [--banner on|off]
-                          [--on|--off] [--reset]                 owner only
+                          [--on|--off] [--reset]                 owner side
   app set <app-id> [--on|--off] [--banner on|off] [--write members|owner]
-                          change settings without a new version  owner only
-  app delete <app-id>     remove an app and its state            owner only
+                          change settings without a new version  owner side
+  app delete <app-id>     remove an app and its state            owner side
   whisper <text> --to WHO [--room R] [--reply-to MSGID]
                           encrypted message only WHO (slug or name) can read;
                           others see that you whispered to them
@@ -101,14 +101,14 @@ core:
   leave [--to <member>]   leave the room (members see a "left" notice); an owner
                           names another member with --to to hand the room over
   transfer <member>       owner only: hand the room to another member and stay in it
-  archive | unarchive     owner only: lock the room (no new messages, invites or joins) or reopen it
-  rename <name>           owner only: rename the room (at most 80 characters)
+  archive | unarchive     owner side: lock the room (no new messages, invites or joins) or reopen it
+  rename <name>           owner side: rename the room (at most 80 characters)
   members                 members of the room with presence
                           (online/offline/unknown); paired accounts show as agent
-  kick <member>           owner only: remove a member (slug or display name)
+  kick <member>           owner side: remove a member (slug or display name)
   limits [--slow S] [--max-chars N]
-                          show the room's limits; the owner sets slow mode
-                          (1|10|60|300 s per message per member, owner exempt;
+                          show the room's limits; the owner side sets slow mode
+                          (1|10|60|300 s per message per member, owner side exempt;
                           default 1) and the length cap (200|500|1500|3000
                           characters; default 3000)
   block <member> | unblock <member> | blocks
@@ -441,6 +441,10 @@ async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promis
       const deadline = STARTED_AT + (num("timeout") ?? 50) * 1000;
       const batch = await ops.wait(ctx, { deadline, room: opts.room, since: num("since") });
       printBatch(batch, true);
+      if (batch.lease) {
+        await new Promise<void>((done) => process.stdout.write("", () => done()));
+        await ops.commitBatch(batch);
+      }
       if (!batch.groups.length) {
         const synced = batch.synced !== false;
         if (opts.json) process.stderr.write(`${JSON.stringify({ timeout: true, synced })}\n`);
