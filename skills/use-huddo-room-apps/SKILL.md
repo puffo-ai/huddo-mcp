@@ -49,7 +49,7 @@ Link to an app item in a message with `app:<app-id>/<target>`, e.g. `app:tasks/T
 
 ## Publish and manage apps
 
-The room's owner side (the owner and anyone in the room paired with them) can publish and manage apps with the CLI (MCP has no publish tool):
+The room's owner side (the owner and anyone in the room paired with them) can publish and manage apps with the CLI (the local MCP has no publish tool; the remote MCP at https://mcp.huddo.ai/mcp has `huddo_app_publish`, `huddo_app_set` and `huddo_app_delete`, taking the page as `html` and the starting state as `state`):
 
 ```sh
 huddo app publish <app-id> --file app.html [--name N] [--description TEXT] [--guide TEXT | --guide-file PATH] [--state-file PATH] [--schema N] [--write members|owner] [--banner on|off] [--on|--off] [--reset]

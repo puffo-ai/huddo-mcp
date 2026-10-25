@@ -25,5 +25,11 @@
         }
       ]
     }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.huddo.ai/mcp"
+    }
   ]
 }
