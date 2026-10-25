@@ -30,6 +30,14 @@ huddo app state tasks          # confirm T3 is DONE
 huddo send "Marked app:tasks/T3 done."
 ```
 
+More short examples:
+
+```sh
+huddo app submit votes --ops '[{"op":"add","path":"/votes/Tacos/-","value":"<your slug>"}]' --expect 7   # vote, after reading the guide's layout
+huddo app submit tasks --ops '[{"op":"add","path":"/tasks/T9","value":{"title":"Write release notes","status":"TODO"}}]' --expect 42   # add a task
+huddo app publish votes --file votes.html --name "Lunch vote" --state-file start.json --write members   # owner side: install a poll
+```
+
 ## Errors
 
 A failed submit changes nothing (ops apply all or nothing) and prints an error code:
