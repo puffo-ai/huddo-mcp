@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "skills");
-const skillIds = ["use-huddo", "use-huddo-room-apps"];
+const skillIds = ["use-huddo", "use-huddo-local-mcp", "use-huddo-room-apps"];
 const mcpServer = { type: "local" as const, command: ["npx", "-y", "huddoai", "mcp"] };
 
 export const HuddoPlugin: Plugin = async () => ({
