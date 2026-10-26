@@ -8,6 +8,8 @@ import { isPlaintextEnvelope, type PlaintextMessageEnvelope } from "../src/messa
 import { isAppNoteContent } from "../src/huddo/app-note";
 import { isWhisperContent, type WhisperContent } from "../src/huddo/whisper";
 import { parseRevision } from "../src/huddo/revisions";
+import { choiceOf, closeTargetOf, optionsOf, type Choice, type ChoiceOption } from "../src/huddo/choices";
+import { formOf, formResponseOf, type FormField, type FormResponse } from "../src/huddo/forms";
 
 export { isPeer, operatorTag } from "../src/huddo/pairing";
 
@@ -35,6 +37,11 @@ export interface Row {
   revision?: { kind: "edit" | "unsend"; target: string };
   edited?: number;
   unsent?: boolean;
+  options?: ChoiceOption[];
+  choice?: Choice;
+  form?: FormField[];
+  formResponse?: FormResponse;
+  closes?: string;
 }
 
 interface HistoryResponse {
@@ -78,6 +85,8 @@ export function rowFromEnvelope(seq: number, envelope: { type?: string }, channe
   const revision = parseRevision(payload.content_type, payload.content);
   if (revision?.kind === "edit") return { ...base, text: revision.text, attachments: [], revision: { kind: "edit", target: revision.target } };
   if (revision?.kind === "unsend") return { ...base, text: "", attachments: [], revision: { kind: "unsend", target: revision.target } };
+  const closes = closeTargetOf(payload.content_type, payload.content);
+  if (closes) return { ...base, text: "", attachments: [], closes };
   if (isWhisperContent(payload.content)) {
     const opened = typeof payload.space_id === "string"
       ? whisperOpener?.(payload.content, { spaceId: payload.space_id, channelId, sender: payload.sender_slug }) ?? null
@@ -98,7 +107,11 @@ export function rowFromEnvelope(seq: number, envelope: { type?: string }, channe
   const text = parsed ? parsed.text : contentText(payload.content);
   const attachments = parsed?.attachments ?? [];
   if (!text.trim() && attachments.length === 0) return null;
-  return { ...base, text, attachments };
+  const options = parsed ? optionsOf(payload.content) : null;
+  const choice = parsed ? choiceOf(payload.content) : null;
+  const form = parsed ? formOf(payload.content) : null;
+  const formResponse = parsed ? formResponseOf(payload.content) : null;
+  return { ...base, text, attachments, ...(options ? { options } : {}), ...(choice ? { choice } : {}), ...(form ? { form } : {}), ...(formResponse ? { formResponse } : {}) };
 }
 
 export async function fetchRows(http: PuffoHttpClient, channelId: string, limit: number): Promise<Row[]> {
@@ -220,6 +233,11 @@ export function formatRow(
   if (row.attachments.length) {
     parts.push(`[attachments: ${row.attachments.map((a) => `${a.filename} (${a.mime_type}, ${formatSize(a.size)})`).join(", ")}]`);
   }
+  if (row.closes) parts.push(`[closed choices on ${neutralizeTags(row.closes)}]`);
+  if (row.options) parts.push(`[options: ${row.options.map((o) => `${neutralizeTags(o.key)}) ${neutralizeTags(o.label)}`).join("  ")}]`);
+  if (row.choice) parts.push(row.choice.key ? `[chose ${neutralizeTags(row.choice.key)} of ${neutralizeTags(row.choice.questionId)}]` : `[own answer to ${neutralizeTags(row.choice.questionId)}]`);
+  if (row.form) parts.push(`[form: ${row.form.map(formatField).join("  ")}]`);
+  if (row.formResponse) parts.push(formatResponse(row.formResponse));
   if (row.reactions?.length) {
     parts.push(`[reactions: ${row.reactions.map((r) => `${r.emoji} ${r.by.length}`).join(", ")}]`);
   }
@@ -232,4 +250,16 @@ export function formatRow(
     );
   }
   return head + parts.filter(Boolean).join(" ");
+}
+
+function formatField(f: FormField): string {
+  const kind = f.type === "choice" ? `choice: ${f.options!.map(neutralizeTags).join("|")}` : f.type;
+  return `${neutralizeTags(f.key)}) ${neutralizeTags(f.label)} (${kind}${f.required ? ", required" : ""})`;
+}
+
+function formatResponse(r: FormResponse): string {
+  const id = neutralizeTags(r.questionId);
+  if (r.skipped) return `[skipped form ${id}]`;
+  const pairs = Object.entries(r.values ?? {}).map(([k, v]) => `${neutralizeTags(k)}=${neutralizeTags(v.replace(/\r?\n/g, "\\n"))}`);
+  return `[form answer to ${id}: ${pairs.join("; ")}]`;
 }

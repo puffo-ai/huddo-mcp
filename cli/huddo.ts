@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import { getRuntime } from "./runtime";
 import * as ops from "./ops";
+import { answerFlags } from "./choice-params";
 import { runMcpServer } from "./mcp";
 import { connectGuide } from "./help";
 import { runDaemon } from "./daemon";
@@ -54,13 +55,18 @@ core:
                           (default 20): WORDS in the file name, KIND = a type
                           or extension (image, pdf, ...); shows the local path
                           of files already downloaded
-  send <text> [--room R] [--reply-to MSGID] [--file PATH ...] [--mention WHO ...]
+  send <text> [--room R] [--reply-to MSGID] [--file PATH ...] [--mention WHO ...] [--option LABEL ...] [--form JSON]
                           post a message; @slug mentions are plain text, or
                           --mention a member by display name or slug (all for
                           everyone). The printed id and #seq confirm it was sent.
                           Write line breaks as \\n (cmd.exe cuts real newlines)
                           and a literal \\n as \\\\n; other backslashes are
-                          sent as typed. - reads stdin. Same for edit and whisper
+                          sent as typed. - reads stdin. Same for edit and whisper.
+                          --option (2-8, repeatable) shows answer buttons under
+                          the message; a tap posts that label as a reply to it,
+                          and people can also write their own answer.
+                          --form '<JSON array of fields>' shows a form instead:
+                          {key,label,type: text|textarea|choice,options,required}
   react <msgid> <emoji> [--remove] [--room R]
                           add (or remove) an emoji reaction on a message
   edit <msgid> <text> [--room R]
@@ -70,6 +76,13 @@ core:
   unsend <msgid> [--room R]
                           take back your own message, within 2 minutes of
                           sending; people see "<you> unsent a message"
+  close-choices <msgid> [--room R]
+                          stop taking answers to your own message with
+                          --option or --form; it stops taking answers, counts stay
+  answer <msgid> [--option KEY|LABEL] [--text TEXT] [--field KEY=VALUE ...] [--skip] [--room R]
+                          answer a message sent with --option or --form, as
+                          a tap or a form submit in the web app does: pick an
+                          option, write your own answer, fill fields, or skip
   app list                room apps (shared mini-apps the owner published); alias: apps
   app state <app-id>      an app's shared JSON state and its guide for agents
   app submit <app-id> --ops '<JSON Patch>' [--expect REVISION] [--request-id ID]
@@ -170,6 +183,11 @@ const { values: opts, positionals } = parseArgs({
     to: { type: "string" },
     file: { type: "string", multiple: true },
     mention: { type: "string", multiple: true },
+    option: { type: "string", multiple: true },
+    form: { type: "string" },
+    text: { type: "string" },
+    field: { type: "string", multiple: true },
+    skip: { type: "boolean" },
     out: { type: "string" },
     passphrase: { type: "string" },
     json: { type: "boolean" },
@@ -390,7 +408,7 @@ async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promis
       print(await ops.files(ctx, { query: args.join(" "), room: opts.room, from: opts.from, type: opts.type, limit: num("limit") }));
       break;
     case "send":
-      print(await ops.send(ctx, { text: ops.messageText(args), room: opts.room, replyTo: opts["reply-to"], files: opts.file, mentions: opts.mention }));
+      print(await ops.send(ctx, { text: ops.messageText(args), room: opts.room, replyTo: opts["reply-to"], files: opts.file, mentions: opts.mention, options: opts.option, form: opts.form }));
       break;
     case "react":
       print(await ops.react(ctx, { message: args[0], emoji: args[1], remove: opts.remove, room: opts.room }));
@@ -400,6 +418,12 @@ async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promis
       break;
     case "unsend":
       print(await ops.unsend(ctx, { message: args[0], room: opts.room }));
+      break;
+    case "close-choices":
+      print(await ops.closeChoices(ctx, { message: args[0], room: opts.room }));
+      break;
+    case "answer":
+      print(await ops.answer(ctx, { message: args[0], room: opts.room, ...answerFlags(opts) }));
       break;
     case "app":
     case "apps": {

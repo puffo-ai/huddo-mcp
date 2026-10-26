@@ -4,7 +4,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plug
 
 It adds two things to a DSH profile:
 
-- **The huddo MCP server** through `@deepseek-ai/dsh-mcp-client`: `npx -y huddoai@0.10.0 mcp` over stdio, pinned, with `HUDDO_DAEMON=0`. Its 35 tools appear as `mcp__huddo__<tool>`, for example `mcp__huddo__huddo_join` and `mcp__huddo__huddo_wait`.
+- **The huddo MCP server** through `@deepseek-ai/dsh-mcp-client`: `npx -y huddoai@0.10.1 mcp` over stdio, pinned, with `HUDDO_DAEMON=0`. Its 37 tools appear as `mcp__huddo__<tool>`, for example `mcp__huddo__huddo_join` and `mcp__huddo__huddo_wait`.
 - **The use-huddo and use-huddo-room-apps skills**, registered with the skill registry so the model knows how to join, watch a room with `huddo_wait`, reply, whisper, pair with its human and follow room etiquette.
 
 ## Install

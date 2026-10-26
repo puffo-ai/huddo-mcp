@@ -1,4 +1,8 @@
 import type { PuffoHttpClient } from "../src/http/client";
+import { CHOICE_CLOSE_CONTENT_TYPE, closeContent, type OptionInput } from "../src/huddo/choices";
+import { answerContent, richContent, type AnswerInput } from "./choice-params";
+export type { OptionInput } from "../src/huddo/choices";
+import { linkPreview } from "./link-preview";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join as joinPath } from "node:path";
 import { HttpError } from "../src/http/types";
@@ -79,6 +83,7 @@ import { accountFor, activeSlug, eventSigner, requireAccount, type Account, type
 import { listenerState, markListening, markStopped } from "./listener";
 import { fetchSystemRows, mergeByTime, sameCursor, type SystemCursor } from "./membership";
 import { fetchRows, fetchSince, formatRow, formatSize, isPeer, latestSeqOf, operatorTag, parentPreview, type Row } from "./rows";
+import { pageHint, skippedHint } from "./read-hints";
 import { PairingError, fetchPairs, memberType, pairingResult, randomPairingCode, startPairing, unpairAgent } from "../src/huddo/pairing";
 import { Deadline, DeadlineReached, NetworkError } from "./deadline";
 import { appendRows, cacheFile, cachedFile, extendBack, loadMeta, matches, mergeRevisions, storedRows, syncRoom, type SearchQuery } from "./store";
@@ -97,16 +102,8 @@ import {
   setLimits,
 } from "../src/huddo/moderation";
 
-export class UserError extends Error {}
-
-export function decodeNewlines(text: string): string {
-  return text.replace(/\\\\n|\\n/g, (seq) => (seq.length === 2 ? "\n" : "\\n"));
-}
-
-export function messageText(words: string[], readStdin: () => string = () => readFileSync(0, "utf8")): string {
-  if (words.length === 1 && words[0] === "-") return readStdin().replace(/\r?\n$/, "");
-  return decodeNewlines(words.join(" "));
-}
+export { UserError, decodeNewlines, messageText, splitTrailingReplyTo, parseWhen } from "./text-args";
+import { UserError, splitTrailingReplyTo, parseWhen } from "./text-args";
 
 export { NetworkError };
 
@@ -549,7 +546,7 @@ export async function onboarding(ctx: Ctx, kind: "new" | "join", spaceId: string
   const [profile] = await fetchProfiles(acct.http, [acct.identity.slug]).catch(() => []);
   if (!profile?.avatar_url) {
     const ids = await avatarLibrary().then(avatarChoices, () => `see ${ORIGIN}/agent-avatars/index.json`);
-    steps.push(`Set an avatar people can tell apart: generate one of your own (for example a small SVG that fits your name and role) rather than reusing a model logo; if you can't make an image, use a library id (${ids}): ${w.avatar}.`);
+    steps.push(`Optional: set an avatar so people can tell you apart from agents on the same model. An image of your own (for example a small SVG that fits your name) works best; otherwise use a library id (${ids}): ${w.avatar}.`);
   }
   if (pairStep) steps.push(pairStep);
   steps.push(
@@ -837,6 +834,7 @@ export async function read(ctx: Ctx, opts: { room?: string; limit?: number; befo
   const room = await currentRoom(acct, opts.room);
   const page = { before: opts.before, after: opts.after, limit: clampInt(opts.limit, 20, HISTORY_MAX) };
   const paging = opts.before !== undefined || opts.after !== undefined;
+  const seenBefore = loadState(slug).cursors?.[room.channelId] ?? 0;
   const stored = await storedUntil(acct, room, (rows) =>
     opts.after !== undefined ? rows.some((r) => r.seq <= opts.after!) : pageRows(rows, page).length >= page.limit,
   );
@@ -851,7 +849,9 @@ export async function read(ctx: Ctx, opts: { room?: string; limit?: number; befo
     advanceCursor(slug, room.channelId, messages.reduce((m, r) => Math.max(m, r.seq), 0));
     setSystemCursor(slug, room.channelId, events.cursor);
   }
-  const hint = paging ? pageHint(room.spaceId, messages, stored, loadMeta(slug, room.channelId).complete) : undefined;
+  const hint = paging
+    ? pageHint(room.spaceId, messages, stored, loadMeta(slug, room.channelId).complete)
+    : skippedHint(room.spaceId, messages, stored, seenBefore, slug, loadMeta(slug, room.channelId).complete);
   return withPairs(acct, await attachParents(acct, { groups: [{ room, rows }], names, hint }));
 }
 
@@ -864,29 +864,6 @@ async function storeBatch(acct: Account, groups: RoomMessages[], hint?: string):
 export function pageRows(rows: Row[], opts: { before?: number; after?: number; limit: number }): Row[] {
   if (opts.after !== undefined) return rows.filter((r) => r.seq > opts.after!).slice(0, opts.limit);
   return (opts.before === undefined ? rows : rows.filter((r) => r.seq < opts.before!)).slice(-opts.limit);
-}
-
-export function pageHint(spaceId: string, shown: Row[], stored: Row[], complete: boolean): string {
-  const first = shown[0];
-  const last = shown[shown.length - 1];
-  if (!first || !last) return "no messages in that range";
-  const older = stored.some((r) => r.seq < first.seq) || !complete;
-  const newer = stored.some((r) => r.seq > last.seq);
-  return [
-    older ? `older: huddo read --room ${spaceId} --before ${first.seq}` : "this is the start of the room",
-    ...(newer ? [`newer: huddo read --room ${spaceId} --after ${last.seq}`] : []),
-  ].join("; ");
-}
-
-export function parseWhen(raw: string, now = Date.now()): number {
-  const rel = /^(\d+)([mhdw])$/.exec(raw.trim());
-  if (rel) {
-    const unit = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 }[rel[2] as "m" | "h" | "d" | "w"];
-    return now - Number(rel[1]) * unit;
-  }
-  const at = Date.parse(raw);
-  if (Number.isNaN(at)) throw new UserError(`can't read the time "${raw}": use a date like 2026-10-19 or a span like 3d, 12h, 2w`);
-  return at;
 }
 
 async function allRooms(acct: Account): Promise<Room[]> {
@@ -1286,17 +1263,13 @@ function readFileArg(path: string): Uint8Array<ArrayBuffer> {
   return Uint8Array.from(readFileSync(path));
 }
 
-export function splitTrailingReplyTo(text: string): { text: string; replyTo?: string } {
-  const m = /\s*--reply[-_]to[=\s]+(msg_[\w-]+)\s*$/.exec(text);
-  return m ? { text: text.slice(0, m.index), replyTo: m[1] } : { text };
-}
-
 export async function send(
   ctx: Ctx,
-  opts: { text?: string; room?: string; replyTo?: string; files?: string[]; mentions?: string[]; extra?: Record<string, unknown> },
+  opts: { text?: string; room?: string; replyTo?: string; files?: string[]; mentions?: string[]; options?: OptionInput[]; form?: unknown; extra?: Record<string, unknown> },
 ) {
   if (!opts.replyTo && opts.text) opts = { ...opts, ...splitTrailingReplyTo(opts.text) };
   const files = opts.files ?? [];
+  const rich = richContent(opts.text, opts.options, opts.form);
   const mentions = opts.mentions ?? [];
   if (!opts.text?.length && files.length === 0 && mentions.length === 0) throw new UserError("nothing to send: give text and/or files");
   if (files.length > MAX_ATTACHMENTS_PER_MESSAGE) throw new UserError(`up to ${MAX_ATTACHMENTS_PER_MESSAGE} files per message`);
@@ -1319,19 +1292,19 @@ export async function send(
     await downloadAndDecryptAttachment(ctx.rt.crypto, acct.http, meta);
     attachments.push(meta);
   }
-  const signer = await eventSigner(ctx.rt, acct);
   const body = opts.text ?? "";
-  const envelope = buildPlaintextMessage(ctx.rt.crypto, signer.subkeySecretKey, {
-    envelope_kind: "channel",
-    sender_slug: signer.slug,
-    sender_subkey_id: signer.subkeyId,
-    space_id: room.spaceId,
-    channel_id: room.channelId,
-    content_type: attachments.length ? ATTACHMENT_CONTENT_TYPE : "text/plain",
-    content: attachments.length ? { text: body, attachments, ...opts.extra } : opts.extra ? { text: body, ...opts.extra } : body,
-    recipients: [],
-    reply_to_id: opts.replyTo || undefined,
-  });
+  const preview = attachments.length || rich || opts.extra ? null : await linkPreview(body, (file) => encryptAndUploadAttachment(ctx.rt.crypto, acct.http, file));
+  const structured = attachments.length || rich || preview;
+  const envelope = channelEnvelope(
+    ctx,
+    await eventSigner(ctx.rt, acct),
+    room,
+    structured ? ATTACHMENT_CONTENT_TYPE : "text/plain",
+    structured
+      ? { text: body, attachments, ...rich, ...(preview ? { preview } : {}), ...opts.extra }
+      : opts.extra ? { text: body, ...opts.extra } : body,
+    opts.replyTo,
+  );
   const posted = await postWithLimits(acct, envelope);
   return {
     json: {
@@ -1431,7 +1404,23 @@ export async function edit(ctx: Ctx, opts: { message?: string; text?: string; ro
     contentType = WHISPER_CONTENT_TYPE;
     content = whisperEditContent(sealed, message);
   }
-  const envelope = buildPlaintextMessage(ctx.rt.crypto, signer.subkeySecretKey, {
+  const envelope = channelEnvelope(ctx, signer, room, contentType, content);
+  const posted = await postRevision(acct, envelope);
+  return {
+    json: { id: envelope.envelope_id, seq: posted.seq ?? null, spaceId: room.spaceId, channelId: room.channelId, room: room.name, message, whisper: Boolean(original?.whisper) },
+    text: `edited ${message}${original?.whisper ? " (whisper)" : ""} in "${room.name}" (${room.spaceId})`,
+  };
+}
+
+function channelEnvelope(
+  ctx: Ctx,
+  signer: Awaited<ReturnType<typeof eventSigner>>,
+  room: { spaceId: string; channelId: string },
+  contentType: string,
+  content: unknown,
+  replyTo?: string,
+) {
+  return buildPlaintextMessage(ctx.rt.crypto, signer.subkeySecretKey, {
     envelope_kind: "channel",
     sender_slug: signer.slug,
     sender_subkey_id: signer.subkeyId,
@@ -1440,35 +1429,46 @@ export async function edit(ctx: Ctx, opts: { message?: string; text?: string; ro
     content_type: contentType,
     content,
     recipients: [],
+    reply_to_id: replyTo || undefined,
   });
-  const posted = await postRevision(acct, envelope);
+}
+
+async function postAbout(
+  ctx: Ctx,
+  opts: { message?: string; room?: string },
+  usage: string,
+  contentType: string,
+  content: (message: string) => unknown,
+  done: string,
+  post: typeof postWithLimits,
+) {
+  const message = opts.message?.trim() ?? "";
+  if (!message) throw new UserError(usage);
+  const acct = account(ctx);
+  const room = await currentRoom(acct, opts.room);
+  const envelope = channelEnvelope(ctx, await eventSigner(ctx.rt, acct), room, contentType, content(message));
+  const posted = await post(acct, envelope);
   return {
-    json: { id: envelope.envelope_id, seq: posted.seq ?? null, spaceId: room.spaceId, channelId: room.channelId, room: room.name, message, whisper: Boolean(original?.whisper) },
-    text: `edited ${message}${original?.whisper ? " (whisper)" : ""} in "${room.name}" (${room.spaceId})`,
+    json: { id: envelope.envelope_id, seq: posted.seq ?? null, spaceId: room.spaceId, channelId: room.channelId, room: room.name, message },
+    text: `${done} ${message} in "${room.name}" (${room.spaceId})`,
   };
 }
 
-export async function unsend(ctx: Ctx, opts: { message?: string; room?: string }) {
+export const unsend = (ctx: Ctx, opts: { message?: string; room?: string }) =>
+  postAbout(ctx, opts, "unsend needs the message id (msg_...)", UNSEND_CONTENT_TYPE, unsendContent, "unsent", postRevision);
+
+export const closeChoices = (ctx: Ctx, opts: { message?: string; room?: string }) =>
+  postAbout(ctx, opts, "close-choices needs the id (msg_...) of your message with options", CHOICE_CLOSE_CONTENT_TYPE, closeContent, "closed the choices on", postWithLimits);
+
+export async function answer(ctx: Ctx, opts: { message?: string; room?: string } & AnswerInput) {
   const message = opts.message?.trim() ?? "";
-  if (!message) throw new UserError("unsend needs the message id (msg_...)");
+  if (!message) throw new UserError("answer needs the id (msg_...) of a message with options or a form");
   const acct = account(ctx);
   const room = await currentRoom(acct, opts.room);
-  const signer = await eventSigner(ctx.rt, acct);
-  const envelope = buildPlaintextMessage(ctx.rt.crypto, signer.subkeySecretKey, {
-    envelope_kind: "channel",
-    sender_slug: signer.slug,
-    sender_subkey_id: signer.subkeyId,
-    space_id: room.spaceId,
-    channel_id: room.channelId,
-    content_type: UNSEND_CONTENT_TYPE,
-    content: unsendContent(message),
-    recipients: [],
-  });
-  const posted = await postRevision(acct, envelope);
-  return {
-    json: { id: envelope.envelope_id, seq: posted.seq ?? null, spaceId: room.spaceId, channelId: room.channelId, room: room.name, message },
-    text: `unsent ${message} in "${room.name}" (${room.spaceId})`,
-  };
+  const content = answerContent(await fetchRows(acct.http, room.channelId, PARENT_LOOKUP_LIMIT), message, opts);
+  const envelope = channelEnvelope(ctx, await eventSigner(ctx.rt, acct), room, ATTACHMENT_CONTENT_TYPE, content, message);
+  const posted = await postWithLimits(acct, envelope);
+  return { json: { id: envelope.envelope_id, seq: posted.seq ?? null, room: room.name, message }, text: `answered ${message} in "${room.name}" (${room.spaceId})` };
 }
 
 function appFail(err: unknown): never {

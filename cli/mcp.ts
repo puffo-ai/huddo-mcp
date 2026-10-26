@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { ANSWER_PARAMS, answerArgs, FORM_PARAM, OPTION_PARAM } from "./choice-params";
 import { getRuntime } from "./runtime";
 import * as ops from "./ops";
 import { notifyDaemon } from "./ipc";
@@ -167,6 +168,8 @@ const TOOLS: Tool[] = [
       reply_to: { type: "string", description: "Message id (msg_...) this replies to" },
       files: { type: "array", items: { type: "string" }, description: "Local file paths to attach (up to 10, 8 MB each)" },
       mention: { type: "array", items: { type: "string" }, description: "Members to @mention by display name or slug (\"all\" for everyone); added to the start of the text" },
+      option: OPTION_PARAM,
+      form: FORM_PARAM,
       ...asProp,
     },
     run: async (ctx, a) => {
@@ -174,12 +177,18 @@ const TOOLS: Tool[] = [
       if (!Array.isArray(files) || files.some((f) => typeof f !== "string")) throw new ops.UserError("files must be an array of paths");
       const mention = a.mention === undefined ? [] : a.mention;
       if (!Array.isArray(mention) || mention.some((m) => typeof m !== "string")) throw new ops.UserError("mention must be an array of names or slugs");
+      const options = a.option === undefined ? [] : a.option;
+      if (!Array.isArray(options) || options.some((o) => typeof o !== "string" && (!o || typeof o !== "object"))) {
+        throw new ops.UserError("option must be an array of labels or {key, label, description}");
+      }
       const sent = await ops.send(ctx, {
         text: str(a, "text"),
         room: str(a, "room"),
         replyTo: str(a, "reply_to"),
         files: files as string[],
         mentions: mention as string[],
+        options: options as ops.OptionInput[],
+        form: a.form,
       });
       return `${sent.text}\n${KEEP_LISTENING}`;
     },
@@ -244,6 +253,27 @@ const TOOLS: Tool[] = [
       const done = await ops.unsend(ctx, { message: str(a, "message"), room: str(a, "room") });
       return `${done.text}\n${KEEP_LISTENING}`;
     },
+  },
+  {
+    name: "huddo_close_choices",
+    description: "Stop taking answers to your own message sent with option or form: its buttons turn off and the counts stay. Agents see a [closed choices on msg_...] line.",
+    properties: {
+      message: { type: "string", description: "Id (msg_...) of your message with options or a form" },
+      ...roomProp,
+      ...asProp,
+    },
+    required: ["message"],
+    run: async (ctx, a) => {
+      const done = await ops.closeChoices(ctx, { message: str(a, "message"), room: str(a, "room") });
+      return `${done.text}\n${KEEP_LISTENING}`;
+    },
+  },
+  {
+    name: "huddo_answer",
+    description: "Answer a message sent with option or form, the same way a tap or a form submit does in the web app: pick an option (key or label), write your own answer (text), fill the form (fields) or decline it (skip). Shows as [chose ...], [own answer to ...], [form answer to ...] or [skipped form ...].",
+    properties: { message: { type: "string", description: "Id (msg_...) of the message with options or a form" }, ...ANSWER_PARAMS, ...roomProp, ...asProp },
+    required: ["message"],
+    run: async (ctx, a) => `${(await ops.answer(ctx, { message: str(a, "message"), room: str(a, "room"), ...answerArgs(a) })).text}\n${KEEP_LISTENING}`,
   },
   {
     name: "huddo_app_list",
