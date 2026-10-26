@@ -2,7 +2,6 @@ import type { CryptoOps } from "./types";
 import { HttpError, HttpTimeoutError, SessionRecoveryError, StaleHttpSessionError } from "./types";
 import { authHeadersToRecord } from "../identity/session/signing";
 import { transportSigningPort } from "../application/runtime/transport-signing-port";
-import type { TransportSigningInput } from "../application/runtime/transport-signing-port";
 import {
   coordinateRotation,
   mintAndPostSubkey,
@@ -15,8 +14,8 @@ import {
   BrowserKeyStore,
   needsRotation,
 } from "../identity/primitives/keystore";
-import { findAccountKeyAuthority } from "../application/runtime/account-key-authority-registry";
 import { loadLegacyIdentity, loadLegacySession } from "../application/runtime/legacy-secret-read-adapter";
+import { coreHttpTransportFor, coreOwnsAcks } from "./core-transport-port";
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 export const DEFAULT_UPLOAD_TIMEOUT_MS = 5 * 60_000;
@@ -41,6 +40,7 @@ export class PuffoHttpClient {
   }
 
   async get<T = unknown>(path: string): Promise<T> {
+    if (path.startsWith("/messages/pending") && coreOwnsAcks(this.serverUrl, this.slug)) return { messages: [] } as T;
     return this.request<T>("GET", path);
   }
 
@@ -69,38 +69,8 @@ export class PuffoHttpClient {
     );
   }
 
-  async verifyTypedEvent(
-    event: Record<string, unknown>,
-    chain: Record<string, unknown>,
-  ): Promise<boolean> {
-    this.assertSessionCurrent();
-    await this.ensureSubkey();
-    const input = await this.transportSigningInput();
-    return transportSigningPort().verifyEvent(input, event, chain);
-  }
-
-  private async transportSigningInput(): Promise<TransportSigningInput> {
-    const owner = transportSigningPort().authority === "rust"
-      ? findAccountKeyAuthority(this.serverUrl, this.slug) : null;
-    const session = owner ? {
-      device_id: owner.deviceId, subkey_id: owner.subkeyId,
-      subkey_secret_key: new Uint8Array(0), expires_at: owner.subkeyExpiresAt ?? 0,
-    } : await loadLegacySession(this.keyStore, this.slug);
-    this.assertSessionCurrent();
-    if (!session) throw new Error("No active session — subkey rotation failed");
-    return {
-      serverUrl: this.serverUrl,
-      slug: this.slug,
-      credential: {
-        deviceId: session.device_id,
-        keyId: session.subkey_id,
-        secretKey: session.subkey_secret_key,
-      },
-      crypto: this.crypto,
-    };
-  }
-
   async post<T = unknown>(path: string, body?: Record<string, unknown>): Promise<T> {
+    if (path === "/messages/ack" && coreOwnsAcks(this.serverUrl, this.slug)) return {} as T;
     const raw = body ? new TextEncoder().encode(JSON.stringify(body)) : new Uint8Array(0);
     return this.request<T>("POST", path, raw);
   }
@@ -146,7 +116,7 @@ export class PuffoHttpClient {
   }
 
   async getBytes(path: string, opts?: { timeoutMs?: number }): Promise<Uint8Array> {
-    await this.ensureSubkey();
+    if (!this.viaCore("GET", path)) await this.ensureSubkey();
     const resp = await this.requestWithSessionRecovery(
       "GET",
       path,
@@ -167,7 +137,7 @@ export class PuffoHttpClient {
     body: Uint8Array = new Uint8Array(0),
     opts?: { timeoutMs?: number },
   ): Promise<T> {
-    await this.ensureSubkey();
+    if (!this.viaCore(method, path)) await this.ensureSubkey();
     const timeoutMs = opts?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 
     const resp = await this.requestWithSessionRecovery(method, path, body, timeoutMs);
@@ -181,6 +151,7 @@ export class PuffoHttpClient {
     body: Uint8Array,
     timeoutMs: number,
   ): Promise<Response> {
+    if (this.viaCore(method, path)) return this.doRequest(method, path, body, timeoutMs);
     if (method !== "GET" && method !== "HEAD") {
       this.assertSessionCurrent();
       return this.doRequest(method, path, body, timeoutMs);
@@ -241,12 +212,7 @@ export class PuffoHttpClient {
 
   private async authHeaders(method: string, path: string, body: Uint8Array): Promise<Record<string, string>> {
     this.assertSessionCurrent();
-    const owner = transportSigningPort().authority === "rust"
-      ? findAccountKeyAuthority(this.serverUrl, this.slug) : null;
-    const session = owner ? {
-      device_id: owner.deviceId, subkey_id: owner.subkeyId,
-      subkey_secret_key: new Uint8Array(0), expires_at: owner.subkeyExpiresAt ?? 0,
-    } : await loadLegacySession(this.keyStore, this.slug);
+    const session = await loadLegacySession(this.keyStore, this.slug);
     this.assertSessionCurrent();
     if (!session) {
       throw new Error("No active session — subkey rotation failed");
@@ -276,6 +242,19 @@ export class PuffoHttpClient {
     body: Uint8Array,
     timeoutMs: number,
   ): Promise<Response> {
+    const core = coreHttpTransportFor(this.serverUrl, this.slug, method, path);
+    if (core) {
+      this.assertSessionCurrent();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new HttpTimeoutError(method, path, timeoutMs)), timeoutMs);
+      });
+      try {
+        return await Promise.race([core.send(method, path, body), deadline]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
     const headers = await this.authHeaders(method, path, body);
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -298,20 +277,19 @@ export class PuffoHttpClient {
     }
   }
 
+  private viaCore(method: string, path: string): boolean {
+    return coreHttpTransportFor(this.serverUrl, this.slug, method, path) !== null;
+  }
+
   private async ensureSubkey(): Promise<void> {
     this.assertSessionCurrent();
-    const owner = transportSigningPort().authority === "rust"
-      ? findAccountKeyAuthority(this.serverUrl, this.slug) : null;
-    const session = owner ? {
-      device_id: owner.deviceId, subkey_id: owner.subkeyId,
-      subkey_secret_key: new Uint8Array(0), expires_at: owner.subkeyExpiresAt ?? 0,
-    } : await loadLegacySession(this.keyStore, this.slug);
+    const session = await loadLegacySession(this.keyStore, this.slug);
     this.assertSessionCurrent();
     if (!session || needsRotation(session.expires_at)) {
       await this.rotateSubkeyWithRetry(this.assertSessionCurrent.bind(this));
       return;
     }
-    const identity = owner ? null : await loadLegacyIdentity(this.keyStore, this.slug);
+    const identity = await loadLegacyIdentity(this.keyStore, this.slug);
     this.assertSessionCurrent();
     if (identity && session.device_id !== identity.device_id) {
       await this.rotateSubkeyWithRetry(this.assertSessionCurrent.bind(this));

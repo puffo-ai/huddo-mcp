@@ -60,9 +60,6 @@ export function signSpaceEvent(
     signature: "",
   };
   if (!http || typeof http.signTypedEvent !== "function") {
-    if (transportSigningPort().typedEventAuthority === "rust") {
-      throw new Error("Typed-event HTTP authority is unavailable");
-    }
     return transportSigningPort().signEvent({
       serverUrl: "",
       slug: signer.slug,

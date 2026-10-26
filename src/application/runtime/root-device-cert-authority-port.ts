@@ -34,7 +34,6 @@ export interface RootDeviceCertCeremony {
 }
 
 export interface RootDeviceCertAuthorityPort {
-  readonly authority: "typescript" | "rust";
   begin(input: RootDeviceCertBeginInput): RootDeviceCertCeremony;
   dispose(): void;
 }
@@ -49,10 +48,6 @@ export function installRootDeviceCertAuthorityPort(port: RootDeviceCertAuthority
 export function rootDeviceCertAuthorityPort(): RootDeviceCertAuthorityPort {
   if (!installed) throw new Error("Root/device certificate authority is unavailable");
   return installed;
-}
-
-export function clearRootDeviceCertAuthorityHandles(): void {
-  installed?.dispose();
 }
 
 export function resetRootDeviceCertAuthorityPortForTests(): void {

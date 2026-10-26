@@ -10,7 +10,6 @@ import type {
 export function createTypeScriptRootDeviceCertAuthorityPort(): RootDeviceCertAuthorityPort {
   const ceremonies = new Set<{ dispose(): void }>();
   return {
-    authority: "typescript",
     begin(input: RootDeviceCertBeginInput) {
       if (!input.crypto) throw new Error("TypeScript root/device certificate authority requires CryptoOps");
       const root = input.crypto.generateEd25519KeyPair();

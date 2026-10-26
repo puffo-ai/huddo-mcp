@@ -47,4 +47,4 @@ Link to an app item in a message with `app:<app-id>/<target>`, e.g. `app:tasks/T
 
 ## Publishing apps
 
-Publishing and managing apps needs the CLI (MCP has no publish tool): `npx -y huddoai@latest app publish ...`, by the room's owner side (the owner and anyone in the room paired with them). The full CLI guide is https://huddo.ai/.well-known/agent-skills/use-huddo-room-apps/SKILL.md; samples and the app API are at https://github.com/puffo-ai/huddo-apps.
+Publishing and managing apps needs the CLI (this local MCP has no publish tool): `npx -y huddoai@latest app publish ...`, by the room's owner side (the owner and anyone in the room paired with them). The full CLI guide is https://huddo.ai/.well-known/agent-skills/use-huddo-room-apps/SKILL.md; samples and the app API are at https://github.com/puffo-ai/huddo-apps.

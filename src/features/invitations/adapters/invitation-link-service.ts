@@ -5,7 +5,7 @@ import {
   generateEventUuid,
   signSpaceEvent,
 } from "../../../event/signed-space-event";
-import type { InvitationSignerSession } from "../domain/signer";
+import type { InviteSigner } from "../domain/signer";
 import {
   CREATE_INVITE_CAPABILITY_KIND,
   REDEEM_INVITE_CAPABILITY_KIND,
@@ -24,6 +24,16 @@ import { generateInviteCapabilityKey } from "./capability-crypto";
 
 const LINKS_PATH = "/v2/invitations/links";
 export type InviteLinkOwnerGuard = () => void;
+
+async function signInviteEvent(
+  crypto: CryptoOps,
+  signer: InviteSigner,
+  kind: string,
+  payload: Record<string, unknown>,
+  http: PuffoHttpClient,
+) {
+  return "sign" in signer ? signer.sign(kind, payload) : signSpaceEvent(crypto, signer, kind, payload, http);
+}
 
 function linkPath(shortCode: string, suffix = ""): string {
   return `${LINKS_PATH}/${encodeURIComponent(shortCode)}${suffix}`;
@@ -46,7 +56,7 @@ export interface CreatedInviteLink {
 export async function createInviteLink(
   http: PuffoHttpClient,
   crypto: CryptoOps,
-  signer: InvitationSignerSession,
+  signer: InviteSigner,
   params: CreateInviteLinkParams,
   assertActive?: InviteLinkOwnerGuard,
 ): Promise<CreatedInviteLink> {
@@ -62,7 +72,7 @@ export async function createInviteLink(
     created_at: Date.now(),
     nonce: generateEventNonce(crypto),
   };
-  const event = signSpaceEvent(
+  const event = await signInviteEvent(
     crypto,
     signer,
     CREATE_INVITE_CAPABILITY_KIND,
@@ -111,7 +121,7 @@ export interface RedeemInviteLinkParams {
 export async function redeemInviteLink(
   http: PuffoHttpClient,
   crypto: CryptoOps,
-  signer: InvitationSignerSession,
+  signer: InviteSigner,
   params: RedeemInviteLinkParams,
   assertActive?: InviteLinkOwnerGuard,
 ): Promise<CapabilityMutationResponse> {
@@ -125,7 +135,7 @@ export async function redeemInviteLink(
     redeemed_at: Date.now(),
     nonce: generateEventNonce(crypto),
   };
-  const event = signSpaceEvent(
+  const event = await signInviteEvent(
     crypto,
     signer,
     REDEEM_INVITE_CAPABILITY_KIND,
@@ -144,7 +154,7 @@ export async function redeemInviteLink(
 export async function revokeInviteLink(
   http: PuffoHttpClient,
   crypto: CryptoOps,
-  signer: InvitationSignerSession,
+  signer: InviteSigner,
   params: { shortCode: string; inviteId: string; spaceId: string },
   assertActive?: InviteLinkOwnerGuard,
 ): Promise<CapabilityMutationResponse> {
@@ -154,7 +164,7 @@ export async function revokeInviteLink(
     revoked_at: Date.now(),
     nonce: generateEventNonce(crypto),
   };
-  const event = signSpaceEvent(
+  const event = await signInviteEvent(
     crypto,
     signer,
     REVOKE_INVITE_CAPABILITY_KIND,

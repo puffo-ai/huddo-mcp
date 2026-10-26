@@ -29,6 +29,7 @@ const IDENTITY_DELETION_AUDIT_KEY = "puffo-identity-deletion-audit-v1";
 
 export type IdentityDeletionReason =
   | "agent-provisioning-cleanup"
+  | "core-signup-cleanup"
   | "expired-recoverable-identity"
   | "force-sign-out"
   | "login-saved-identity-delete"

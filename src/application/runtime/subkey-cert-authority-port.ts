@@ -14,7 +14,6 @@ export type SubkeyCertIssueInput = Readonly<{
 }>;
 
 export interface SubkeyCertAuthorityPort {
-  readonly authority: "typescript" | "rust";
   issue(input: SubkeyCertIssueInput): IssuedSubkey;
   dispose(): void;
 }
@@ -29,10 +28,6 @@ export function installSubkeyCertAuthorityPort(port: SubkeyCertAuthorityPort): v
 export function subkeyCertAuthorityPort(): SubkeyCertAuthorityPort {
   if (!installed) throw new Error("Rust subkey certificate authority is unavailable");
   return installed;
-}
-
-export function clearSubkeyCertAuthorityHandles(): void {
-  installed?.dispose();
 }
 
 export function resetSubkeyCertAuthorityPortForTests(): void {

@@ -24,8 +24,6 @@ export type WsConnectPayload = Readonly<{
 }>;
 
 export interface TransportSigningPort {
-  readonly authority: "typescript" | "rust";
-  readonly typedEventAuthority: "typescript" | "rust";
   signHttp(
     input: TransportSigningInput,
     method: string,
@@ -37,18 +35,11 @@ export interface TransportSigningPort {
     input: TransportSigningInput,
     event: T,
   ): T;
-  verifyEvent(
-    input: TransportSigningInput,
-    event: Record<string, unknown>,
-    chain: Record<string, unknown>,
-  ): boolean;
   dispose(): void;
 }
 
 export function createTypeScriptTransportSigningPort(): TransportSigningPort {
   return {
-    authority: "typescript",
-    typedEventAuthority: "typescript",
     signHttp: (input, method, path, body) => signRequest(
       input.crypto,
       input.credential.secretKey,
@@ -85,9 +76,6 @@ export function createTypeScriptTransportSigningPort(): TransportSigningPort {
         ),
       };
     },
-    verifyEvent: () => {
-      throw new Error("TypeScript transport port does not own typed-event verification");
-    },
     dispose: () => undefined,
   };
 }
@@ -101,10 +89,6 @@ export function installTransportSigningPort(port: TransportSigningPort): void {
 
 export function transportSigningPort(): TransportSigningPort {
   return installed;
-}
-
-export function clearTransportSigningHandles(): void {
-  installed.dispose();
 }
 
 export function resetTransportSigningPortForTests(): void {

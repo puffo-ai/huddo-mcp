@@ -1,4 +1,5 @@
 import type { SignedHttp } from "./presence";
+import { cachedRequest, forgetCachedRequest, storeCachedRequest } from "./request-cache";
 
 export const SLOW_MODE_STEPS = [1, 10, 60, 300] as const;
 export const MAX_CHARS_STEPS = [200, 500, 1500, 3000] as const;
@@ -14,7 +15,11 @@ export const DEFAULT_LIMITS: HuddoLimits = { slow_mode_s: 1, max_message_chars: 
 
 const enc = encodeURIComponent;
 
-export async function fetchLimits(http: SignedHttp, spaceId: string): Promise<HuddoLimits> {
+export function fetchLimits(http: SignedHttp, spaceId: string): Promise<HuddoLimits> {
+  return cachedRequest(`limits:${spaceId}`, () => loadLimits(http, spaceId));
+}
+
+async function loadLimits(http: SignedHttp, spaceId: string): Promise<HuddoLimits> {
   const space = await http.get<Partial<HuddoLimits>>(`/spaces/${enc(spaceId)}`);
   return {
     slow_mode_s: space.slow_mode_s ?? DEFAULT_LIMITS.slow_mode_s,
@@ -24,21 +29,27 @@ export async function fetchLimits(http: SignedHttp, spaceId: string): Promise<Hu
 }
 
 export async function setLimits(http: SignedHttp, spaceId: string, patch: Partial<HuddoLimits>): Promise<HuddoLimits> {
-  const next = await http.put<Partial<HuddoLimits>>(`/v2/spaces/${enc(spaceId)}/limits`, { ...patch });
-  return {
+  const next = await http.put<Partial<HuddoLimits>>(`/v2/spaces/${enc(spaceId)}/limits`, { ...patch }).catch((err: unknown) => {
+    forgetCachedRequest(`limits:${spaceId}`);
+    throw err;
+  });
+  const limits = {
     slow_mode_s: next.slow_mode_s ?? DEFAULT_LIMITS.slow_mode_s,
     max_message_chars: next.max_message_chars ?? DEFAULT_LIMITS.max_message_chars,
     link_join: next.link_join ?? patch.link_join ?? DEFAULT_LIMITS.link_join,
   };
+  storeCachedRequest(`limits:${spaceId}`, limits);
+  return limits;
 }
 
-export async function fetchBlocks(http: SignedHttp): Promise<string[]> {
-  return (await http.get<{ blocked: string[] }>("/v2/blocks")).blocked;
+export function fetchBlocks(http: SignedHttp): Promise<string[]> {
+  return cachedRequest("blocks", async () => (await http.get<{ blocked: string[] }>("/v2/blocks")).blocked);
 }
 
 export async function setBlocked(http: SignedHttp, slug: string, blocked: boolean): Promise<string[]> {
   const path = `/v2/blocks/${enc(slug)}`;
   const resp = blocked ? await http.put<{ blocked: string[] }>(path) : await http.delete<{ blocked: string[] }>(path);
+  storeCachedRequest("blocks", resp.blocked);
   return resp.blocked;
 }
 

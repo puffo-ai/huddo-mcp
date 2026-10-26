@@ -1,5 +1,6 @@
 import { HttpError } from "../http/types";
 import type { SignedHttp } from "./presence";
+import { cachedRequest, forgetCachedRequest } from "./request-cache";
 
 export type PatchOp =
   | { op: "add"; path: string; value: unknown }
@@ -132,6 +133,18 @@ export function getAppState<S = Record<string, unknown>>(http: SignedHttp, space
 
 export function getAppCode(http: SignedHttp, spaceId: string, appId: string): Promise<{ code: string; version: number; schema_version: number }> {
   return call(() => http.get(`${base(spaceId)}/${enc(appId)}/code`));
+}
+
+/** Code for this app version, fetched once per session; a response for another version is not kept. */
+export async function cachedAppCode(
+  http: SignedHttp,
+  spaceId: string,
+  meta: Pick<AppMeta, "app_id" | "version" | "schema_version">,
+): Promise<{ code: string; version: number; schema_version: number }> {
+  const key = `app-code:${spaceId}:${meta.app_id}:${meta.version}:${meta.schema_version}`;
+  const out = await cachedRequest(key, () => getAppCode(http, spaceId, meta.app_id), Infinity);
+  if (out.version !== meta.version || out.schema_version !== meta.schema_version) forgetCachedRequest(key);
+  return out;
 }
 
 export function submitOps(http: SignedHttp, spaceId: string, appId: string, input: OpsInput): Promise<{ revision: number; replayed: boolean }> {

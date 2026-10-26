@@ -6,7 +6,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "huddoai@0.9.11",
+        "huddoai@0.10.0",
         "mcp"
       ],
       "env": {

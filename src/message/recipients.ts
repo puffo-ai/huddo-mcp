@@ -1,6 +1,5 @@
 import type { PuffoHttpClient } from "../http/client";
 import type { CryptoOps } from "../http/types";
-import { HttpError } from "../http/types";
 import { idChunks } from "../http/query-ids";
 
 export interface RecipientDevice {
@@ -127,33 +126,6 @@ export async function fetchSenderEventChain(
   };
 }
 
-interface LegacyDeviceCert {
-  device_id?: string;
-  keys?: {
-    encryption?: {
-      public_key?: string;
-    };
-  };
-}
-
-const MAX_RECIPIENT_SLUG_QUERY_CHARS = 1_500;
-
-function chunkRecipientSlugs(slugs: string[]): string[][] {
-  const chunks: string[][] = [];
-  let current: string[] = [];
-  for (const slug of slugs) {
-    const candidate = [...current, slug];
-    if (current.length > 0 && encodeURIComponent(candidate.join(",")).length > MAX_RECIPIENT_SLUG_QUERY_CHARS) {
-      chunks.push(current);
-      current = [slug];
-    } else {
-      current = candidate;
-    }
-  }
-  if (current.length > 0) chunks.push(current);
-  return chunks;
-}
-
 export async function fetchRecipientDevices(
   http: PuffoHttpClient,
   crypto: CryptoOps,
@@ -164,15 +136,8 @@ export async function fetchRecipientDevices(
 
   const devices: CertsActiveEntry[] = [];
   for (const chunk of idChunks(unique)) {
-    try {
-      const resp = await http.post<CertsActiveResponse>("/certs/active/query", { slugs: chunk });
-      devices.push(...(resp.devices ?? []));
-    } catch (err) {
-      if (err instanceof HttpError && err.status === 404) {
-        return fetchRecipientDevicesFromLegacySync(http, crypto, unique);
-      }
-      throw err;
-    }
+    const resp = await http.post<CertsActiveResponse>("/certs/active/query", { slugs: chunk });
+    devices.push(...(resp.devices ?? []));
   }
 
   const recipients: RecipientDevice[] = [];
@@ -187,55 +152,6 @@ export async function fetchRecipientDevices(
     } catch {
     }
   }
-  return recipients;
-}
-
-async function fetchRecipientDevicesFromLegacySync(
-  http: PuffoHttpClient,
-  crypto: CryptoOps,
-  slugs: string[],
-): Promise<RecipientDevice[]> {
-  const byDevice = new Map<string, { seq: number; slug: string; cert: LegacyDeviceCert }>();
-  for (const chunk of chunkRecipientSlugs(slugs)) {
-    let since = "0";
-    const csv = chunk.join(",");
-    while (true) {
-      const resp = await http.get<CertSyncResponse>(
-        `/certs/sync?slugs=${encodeURIComponent(csv)}&since=${encodeURIComponent(since)}&limit=500`,
-      );
-      const entries = resp.entries ?? [];
-      if (entries.length === 0) break;
-
-      for (const entry of entries) {
-        since = String(entry.seq);
-        if (entry.kind !== "device_cert") continue;
-        const cert = entry.cert as LegacyDeviceCert;
-        const deviceId = cert.device_id;
-        if (!entry.slug || !deviceId) continue;
-        const existing = byDevice.get(deviceId);
-        if (!existing || entry.seq > existing.seq) {
-          byDevice.set(deviceId, { seq: entry.seq, slug: entry.slug, cert });
-        }
-      }
-
-      if (!resp.has_more) break;
-    }
-  }
-
-  const recipients: RecipientDevice[] = [];
-  for (const { slug, cert } of byDevice.values()) {
-    const kemPublicKey = cert.keys?.encryption?.public_key;
-    if (!cert.device_id || !kemPublicKey) continue;
-    try {
-      recipients.push({
-        slug,
-        device_id: cert.device_id,
-        kem_public_key: crypto.base64urlDecode(kemPublicKey),
-      });
-    } catch {
-    }
-  }
-
   return recipients;
 }
 
