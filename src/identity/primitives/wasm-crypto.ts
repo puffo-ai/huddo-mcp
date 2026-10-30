@@ -10,15 +10,27 @@ import init, {
   base64urlDecode,
   canonicalizeForSigning,
   sha256,
+  blobStreamReference,
+  blobStreamSealChunk,
+  blobStreamOpenChunk,
 } from "puffo-crypto-wasm-v2";
 import wasmUrl from "puffo-crypto-wasm-v2/puffo_crypto_wasm_v2_bg.wasm?url";
 
-import type { CryptoOps } from "../../http/types";
+import type { BlobStreamCrypto, CryptoOps } from "../../http/types";
+
+/** Usable once `createWasmCrypto` has loaded the module. */
+export const wasmBlobStream: BlobStreamCrypto = {
+  reference: (blobId, sizeBytes, chunkSize, contentType, filename) =>
+    blobStreamReference(blobId, sizeBytes, chunkSize, contentType, filename),
+  seal: (reference, index, plaintext) => blobStreamSealChunk(reference, index, plaintext),
+  open: (reference, index, ciphertext) => blobStreamOpenChunk(reference, index, ciphertext),
+};
 
 export async function createWasmCrypto(): Promise<CryptoOps> {
   await init({ module_or_path: wasmUrl });
 
   return {
+    blobStream: wasmBlobStream,
     ed25519Sign(secretKey: Uint8Array, message: Uint8Array): Uint8Array {
       const kp = WasmEd25519KeyPair.fromBytes(secretKey);
       try {

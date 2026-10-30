@@ -15,6 +15,8 @@ import { FileKeyStore } from "./keystore";
 import { setWhisperOpener } from "./rows";
 import { openWhisper } from "../src/huddo/whisper";
 import { SERVER_URL, listIdentitySlugs, loadConfig } from "./home";
+import { cliClientLabel, installClientLabel } from "../src/http/client-label";
+import { VERSION } from "./version";
 
 export interface Runtime {
   crypto: CryptoOps;
@@ -39,6 +41,8 @@ export function getRuntime(): Promise<Runtime> {
 
 async function createRuntime(): Promise<Runtime> {
   const crypto = await createWasmCrypto();
+  const label = cliClientLabel(process.argv.slice(2), VERSION);
+  installClientLabel([SERVER_URL], () => label);
   installSubkeyCertAuthorityPort(createTypeScriptSubkeyCertAuthorityPort());
   installRootDeviceCertAuthorityPort(createTypeScriptRootDeviceCertAuthorityPort());
   installSpacesMembershipCommandPort(createTypeScriptSpacesMembershipCommandPort());

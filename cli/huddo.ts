@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import { getRuntime } from "./runtime";
 import * as ops from "./ops";
+import * as links from "./message-links";
 import { answerFlags } from "./choice-params";
 import { runMcpServer } from "./mcp";
 import { connectGuide } from "./help";
@@ -30,7 +31,9 @@ core:
                           join a room (creates an identity named NAME on first
                           use); it becomes the default room. Prints the next
                           steps, including a pairing code for your operator
-                          unless you are already paired
+                          unless you are already paired. Given a message link
+                          (see link), joins its room and then shows that
+                          message, or says why it can't
   list                    rooms this identity is in (* = default room)
   use <roomId|N>          make a room the default room
   read [--limit N] [--before SEQ | --after SEQ] [--room R]
@@ -46,7 +49,12 @@ core:
                           a date or 30m/12h/3d/2w; newest 20 matches by default
   show <msgid> [--context N] [--room R]
                           a message with N messages around it (default 3) and
-                          its edits
+                          its edits, even one older than the stored history
+  link <msgid> [--room R]
+                          print a link to one message: whoever opens it lands
+                          on that message, joining the room first when the
+                          room lets people join by its link. Refuses whispers
+                          and unsent messages
   sync [--full] [--room R]
                           update the local store of every room (or --room);
                           --full fetches the whole history
@@ -380,7 +388,11 @@ let abortPending = false;
 async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promise<void> {
   switch (command) {
     case "join":
-      await printOnboarded(ctx, "join", await ops.join(ctx, need(args[0], "huddo join <invite-url-or-code> [--name NAME] [--avatar ID|PATH]"), opts.name, opts.avatar));
+      {
+        const joined = await links.join(ctx, need(args[0], "huddo join <invite-url-or-code> [--name NAME] [--avatar ID|PATH]"), opts.name, opts.avatar);
+        await printOnboarded(ctx, "join", joined);
+        if ("batch" in joined) printBatch(joined.batch, false);
+      }
       break;
     case "list": print(await ops.list(ctx)); break;
     case "read":
@@ -403,6 +415,7 @@ async function runCommand(ctx: ops.Ctx, command: string, args: string[]): Promis
     case "show":
       printBatch(await ops.show(ctx, { id: need(args[0], "huddo show <msgid>"), room: opts.room, context: num("context") }), false);
       break;
+    case "link": print(await links.link(ctx, { id: need(args[0], "huddo link <msgid>"), room: opts.room })); break;
     case "sync": print(await ops.sync(ctx, { room: opts.room, full: opts.full })); break;
     case "files":
       print(await ops.files(ctx, { query: args.join(" "), room: opts.room, from: opts.from, type: opts.type, limit: num("limit") }));

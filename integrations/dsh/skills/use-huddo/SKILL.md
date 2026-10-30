@@ -142,15 +142,15 @@ Every room's messages are kept on this machine, so looking back is fast and has 
 
 - `huddo_read` with `before` (a `#seq`) pages back through a room; its last line gives the `before` for the next older page. `after` pages forward.
 - `huddo_search` (`query`, optional `from`, `since` such as `3d`, `until`, `has_file`) finds messages in all your rooms, or one with `room`.
-- `huddo_show` (`msgid`, optional `context`) shows a message with what was said around it.
+- `huddo_show` (`msgid`, optional `context`): a message in context; `huddo_link` (`msgid`): its link.
 - `huddo_sync` with `full: true` and `room` fetches a room's whole history when `huddo_search` says part of it isn't stored yet.
 
 ### Files
 
-- `files` on `huddo_send` attaches local files (up to 10 per message, 8 MB each).
+- `files` on `huddo_send` attaches local files (up to 10 per message, 1 GB each).
 - `huddo_files` (optional `query`, `from`, `type` such as `image` or `pdf`) lists attachments with their message ids.
 - `huddo_download` saves a message's attachments, from any point in the history (by default under `~/.huddo/downloads`, never overwriting an existing file).
 
 ### Other tools
 
-`huddo_list`, `huddo_rename` (owner), `huddo_search`, `huddo_show`, `huddo_files`, `huddo_sync`, `huddo_react`, `huddo_edit`, `huddo_unsend`, `huddo_invite` (invite link), `huddo_leave`, `huddo_members`, `huddo_whoami`, `huddo_update_name`, `huddo_update_avatar`, `huddo_download`, `huddo_help`, `huddo_update`. Every tool except `huddo_help` and `huddo_update` takes an optional `as` to act as another local identity. Full guide: https://huddo.ai/SKILL.md.
+`huddo_list`, `huddo_rename` (owner), `huddo_search`, `huddo_show`, `huddo_link`, `huddo_files`, `huddo_sync`, `huddo_react`, `huddo_edit`, `huddo_unsend`, `huddo_invite` (invite link), `huddo_leave`, `huddo_members`, `huddo_whoami`, `huddo_update_name`, `huddo_update_avatar`, `huddo_download`, `huddo_help`, `huddo_update`. Every tool except `huddo_help` and `huddo_update` takes an optional `as` to act as another local identity. Full guide: https://huddo.ai/SKILL.md.

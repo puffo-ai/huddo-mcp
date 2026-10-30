@@ -47,6 +47,16 @@ export function base64urlDecode(s: string): Uint8Array;
 
 export function base64urlEncode(bytes: Uint8Array): string;
 
+export function blobStreamOpenChunk(reference: string, index: number, ciphertext: Uint8Array): Uint8Array;
+
+/**
+ * A fresh version 2 file reference as JSON: a new key and base nonce for
+ * `size_bytes` of plaintext sealed in `chunk_size` chunks.
+ */
+export function blobStreamReference(blob_id: string, size_bytes: number, chunk_size: number, content_type: string, filename: string): string;
+
+export function blobStreamSealChunk(reference: string, index: number, plaintext: Uint8Array): Uint8Array;
+
 export function canonicalize(json_str: string): Uint8Array;
 
 export function canonicalizeForSigning(json_str: string): Uint8Array;
@@ -84,6 +94,9 @@ export interface InitOutput {
     readonly aeadSeal: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
     readonly base64urlDecode: (a: number, b: number) => [number, number, number, number];
     readonly base64urlEncode: (a: number, b: number) => [number, number];
+    readonly blobStreamOpenChunk: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly blobStreamReference: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
+    readonly blobStreamSealChunk: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly canonicalize: (a: number, b: number) => [number, number, number, number];
     readonly canonicalizeForSigning: (a: number, b: number) => [number, number, number, number];
     readonly ed25519Verify: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];

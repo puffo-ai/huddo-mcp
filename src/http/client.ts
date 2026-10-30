@@ -39,6 +39,10 @@ export class PuffoHttpClient {
     this.serverUrl = serverUrl.replace(/\/+$/, "");
   }
 
+  get baseUrl(): string {
+    return this.serverUrl;
+  }
+
   async get<T = unknown>(path: string): Promise<T> {
     if (path.startsWith("/messages/pending") && coreOwnsAcks(this.serverUrl, this.slug)) return { messages: [] } as T;
     return this.request<T>("GET", path);

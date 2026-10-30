@@ -1,4 +1,5 @@
 import type { PuffoHttpClient } from "../src/http/client";
+import { HttpError } from "../src/http/types";
 import { parseAttachmentsContent, type AttachmentReference } from "../src/features/attachments/domain/attachment";
 import {
   isMembershipSystemContent,
@@ -118,6 +119,36 @@ export async function fetchRows(http: PuffoHttpClient, channelId: string, limit:
   const resp = await http.get<HistoryResponse>(
     `/v2/messages/history/channel/${encodeURIComponent(channelId)}?limit=${limit}`,
   );
+  return (resp.messages ?? [])
+    .flatMap(({ seq, envelope }) => {
+      const row = envelope ? rowFromEnvelope(seq, envelope, channelId) : null;
+      return row ? [row] : [];
+    })
+    .sort((a, b) => a.seq - b.seq);
+}
+
+interface AroundResponse extends HistoryResponse {
+  anchor?: { id?: unknown };
+}
+
+/** The messages around one message, from the server's `around` window. "unavailable" is the server's one
+ *  answer for a message that is missing, unsent, in another room or a whisper not to or from you;
+ *  "unsupported" means the server predates `around` and ignored it. */
+export async function fetchAround(
+  http: PuffoHttpClient,
+  channelId: string,
+  id: string,
+): Promise<Row[] | "unavailable" | "unsupported"> {
+  let resp: AroundResponse;
+  try {
+    resp = await http.get<AroundResponse>(
+      `/v2/messages/history/channel/${encodeURIComponent(channelId)}?around=${encodeURIComponent(id)}`,
+    );
+  } catch (e) {
+    if (e instanceof HttpError && e.status === 404) return "unavailable";
+    throw e;
+  }
+  if (resp.anchor?.id !== id) return "unsupported";
   return (resp.messages ?? [])
     .flatMap(({ seq, envelope }) => {
       const row = envelope ? rowFromEnvelope(seq, envelope, channelId) : null;

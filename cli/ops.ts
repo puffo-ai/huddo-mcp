@@ -63,7 +63,8 @@ import {
   encryptAndUploadAttachment,
   type AttachmentMeta,
 } from "../src/message/core/attachments";
-import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE } from "../src/features/attachments/domain/attachment";
+import { MAX_ATTACHMENTS_PER_MESSAGE, isStreamedAttachment } from "../src/features/attachments/domain/attachment";
+import { saveStreamedAttachment, uploadFileArg } from "./attachment-files";
 import { fetchProfiles, updateProfile, uploadAvatar } from "../src/ui/services/profile-service";
 import { MAX_PROFILE_AVATAR_BYTES } from "../src/features/profiles/domain/human-profile";
 import { defaultGroupName, invitePath, mainChannelId } from "../src/huddo/config";
@@ -84,6 +85,7 @@ import { listenerState, markListening, markStopped } from "./listener";
 import { fetchSystemRows, mergeByTime, sameCursor, type SystemCursor } from "./membership";
 import { fetchRows, fetchSince, formatRow, formatSize, isPeer, latestSeqOf, operatorTag, parentPreview, type Row } from "./rows";
 import { pageHint, skippedHint } from "./read-hints";
+import { locate } from "./message-links";
 import { PairingError, fetchPairs, memberType, pairingResult, randomPairingCode, startPairing, unpairAgent } from "../src/huddo/pairing";
 import { Deadline, DeadlineReached, NetworkError } from "./deadline";
 import { appendRows, cacheFile, cachedFile, extendBack, loadMeta, matches, mergeRevisions, storedRows, syncRoom, type SearchQuery } from "./store";
@@ -219,13 +221,13 @@ export function cachedNames(): Record<string, string> {
   return loadConfig().names ?? {};
 }
 
-function rememberNames(entries: Record<string, string>): void {
+export function rememberNames(entries: Record<string, string>): void {
   if (Object.keys(entries).length) updateConfig((c) => {
     c.names = { ...c.names, ...entries };
   });
 }
 
-function account(ctx: Ctx): Account {
+export function account(ctx: Ctx): Account {
   try {
     return requireAccount(ctx.rt, ctx.as);
   } catch (e) {
@@ -233,7 +235,7 @@ function account(ctx: Ctx): Account {
   }
 }
 
-function checkName(name?: string) {
+export function checkName(name?: string) {
   const error = name?.trim() ? displayNameError(name) : null;
   if (error) throw new UserError(error);
 }
@@ -295,7 +297,7 @@ async function latestSeq(acct: Account, channelId: string): Promise<number> {
   return latestSeqOf(acct.http, channelId);
 }
 
-async function makeDefault(acct: Account, room: Room, baseline = false, onlyIfUnset = false): Promise<void> {
+export async function makeDefault(acct: Account, room: Room, baseline = false, onlyIfUnset = false): Promise<void> {
   const seq = baseline ? await latestSeq(acct, room.channelId).catch(() => 0) : 0;
   updateState(acct.identity.slug, (s) => {
     if (!onlyIfUnset || !s.room) s.room = room;
@@ -315,7 +317,7 @@ export async function resolveRoomArg(acct: Account, arg: string): Promise<Room> 
   return room;
 }
 
-async function currentRoom(acct: Account, roomArg?: string): Promise<Room> {
+export async function currentRoom(acct: Account, roomArg?: string): Promise<Room> {
   if (roomArg) {
     const room = await resolveRoomArg(acct, roomArg);
     await makeDefault(acct, room, false, true);
@@ -796,9 +798,9 @@ function daemonKeeps(daemon: Set<string>, slug: string, room: Room): boolean {
   return daemon.has(room.spaceId) && loadMeta(slug, room.channelId).seeded;
 }
 
-const FIND_PAGES = 10;
+export const FIND_PAGES = 10;
 
-async function storedUntil(acct: Account, room: Room, enough: (rows: Row[]) => boolean, maxPages = Infinity): Promise<Row[]> {
+export async function storedUntil(acct: Account, room: Room, enough: (rows: Row[]) => boolean, maxPages = Infinity): Promise<Row[]> {
   const slug = acct.identity.slug;
   if (!daemonKeeps(await daemonRooms(slug), slug, room)) {
     try {
@@ -822,7 +824,7 @@ async function storedUntil(acct: Account, room: Room, enough: (rows: Row[]) => b
   return rows;
 }
 
-function notFound(id: string, room: Room, slug: string): UserError {
+export function notFound(id: string, room: Room, slug: string): UserError {
   return loadMeta(slug, room.channelId).complete
     ? new UserError(`message ${id} not found in "${room.name}" (${room.spaceId})`)
     : new UserError(`message ${id} not found in the stored history of "${room.name}"; check the id, or run \`huddo sync --full --room ${room.spaceId}\` and try again`);
@@ -965,13 +967,10 @@ export async function search(
   return storeBatch(acct, groups, parts.join("; "));
 }
 
-export async function show(ctx: Ctx, opts: { id: string; room?: string; context?: number }): Promise<MessageBatch> {
+export async function show(ctx: Ctx, opts: { id: string; room?: string; context?: number; pages?: number }): Promise<MessageBatch> {
   const acct = account(ctx);
   const room = await currentRoom(acct, opts.room);
-  const rows = await storedUntil(acct, room, (all) => all.some((r) => r.id === opts.id), FIND_PAGES);
-  const merged = mergeRevisions(rows);
-  const at = merged.findIndex((r) => r.id === opts.id);
-  if (at < 0) throw notFound(opts.id, room, acct.identity.slug);
+  const { rows, merged, at } = await locate(acct, room, opts.id, opts.pages);
   const around = Math.max(0, Math.min(50, Math.floor(opts.context ?? 3)));
   const edits = rows.filter((r) => r.revision?.target === opts.id);
   const hint = [
@@ -1239,25 +1238,6 @@ export async function members(ctx: Ctx, roomArg?: string) {
   };
 }
 
-const MIME: Record<string, string> = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp",
-  ".svg": "image/svg+xml",
-  ".pdf": "application/pdf",
-  ".txt": "text/plain",
-  ".md": "text/markdown",
-  ".html": "text/html",
-  ".json": "application/json",
-  ".csv": "text/csv",
-  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ".zip": "application/zip",
-  ".mp4": "video/mp4",
-  ".mp3": "audio/mpeg",
-};
-
 function readFileArg(path: string): Uint8Array<ArrayBuffer> {
   if (!existsSync(path)) throw new UserError(`file not found: ${path}`);
   return Uint8Array.from(readFileSync(path));
@@ -1284,14 +1264,7 @@ export async function send(
     opts = { ...opts, text: [tags.join(" "), opts.text ?? ""].filter(Boolean).join(" ") };
   }
   const attachments: AttachmentMeta[] = [];
-  for (const path of files) {
-    const bytes = readFileArg(path);
-    if (bytes.length > MAX_ATTACHMENT_BYTES) throw new UserError(`${basename(path)} is larger than ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB`);
-    const file = new File([bytes], basename(path), { type: MIME[extname(path).toLowerCase()] ?? "application/octet-stream" });
-    const meta = await encryptAndUploadAttachment(ctx.rt.crypto, acct.http, file);
-    await downloadAndDecryptAttachment(ctx.rt.crypto, acct.http, meta);
-    attachments.push(meta);
-  }
+  for (const path of files) attachments.push(await uploadFileArg(ctx.rt.crypto, acct.http, path));
   const body = opts.text ?? "";
   const preview = attachments.length || rich || opts.extra ? null : await linkPreview(body, (file) => encryptAndUploadAttachment(ctx.rt.crypto, acct.http, file));
   const structured = attachments.length || rich || preview;
@@ -1792,6 +1765,10 @@ export async function download(ctx: Ctx, id: string, opts: { room?: string; outD
   mkdirSync(dir, { recursive: true });
   const saved: string[] = [];
   for (const a of row.attachments) {
+    if (isStreamedAttachment(a)) {
+      saved.push(await saveStreamedAttachment(ctx.rt.crypto, acct.http, a, writeNewFile(dir, basename(a.filename || a.blob_id), new Uint8Array(0))));
+      continue;
+    }
     const hit = cachedFile(slug, a.blob_id);
     const bytes = hit ? readFileSync(hit) : await downloadAndDecryptAttachment(ctx.rt.crypto, acct.http, a);
     if (!hit) cacheFile(slug, a.blob_id, bytes);
@@ -1902,13 +1879,13 @@ async function avatarLibrary(): Promise<AvatarEntry[]> {
 
 const avatarChoices = (library: AvatarEntry[]) => library.map((e) => e.id).join(", ");
 
-async function ownName(acct: Account, given?: string): Promise<string | null> {
+export async function ownName(acct: Account, given?: string): Promise<string | null> {
   if (given?.trim()) return given.trim();
   const [profile] = await fetchProfiles(acct.http, [acct.identity.slug]).catch(() => []);
   return profile?.display_name ?? null;
 }
 
-async function avatarBytes(arg: string): Promise<{ bytes: Uint8Array; label: string }> {
+export async function avatarBytes(arg: string): Promise<{ bytes: Uint8Array; label: string }> {
   if (existsSync(arg)) {
     if (![".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"].includes(extname(arg).toLowerCase())) {
       throw new UserError("avatar must be a .png, .jpg, .gif, .webp or .svg file");
@@ -1929,7 +1906,7 @@ export async function updateAvatar(ctx: Ctx, arg: string, forOperator?: boolean)
   return setAvatar(ctx, await avatarBytes(arg), forOperator);
 }
 
-async function setAvatar(ctx: Ctx, picked: { bytes: Uint8Array; label: string }, forOperator?: boolean) {
+export async function setAvatar(ctx: Ctx, picked: { bytes: Uint8Array; label: string }, forOperator?: boolean) {
   const acct = account(ctx);
   const target = await profileTarget(acct, forOperator);
   const { bytes, label } = picked;

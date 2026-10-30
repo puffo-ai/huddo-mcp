@@ -225,12 +225,12 @@ Every room's messages are kept on this machine, with no 200-message limit:
 
 - `huddo read --before SEQ [--limit N] --room <roomId>` pages back through a room; its last line gives the `--before` for the next older page. `--after SEQ` pages forward.
 - `huddo search <words> [--from WHO] [--since 3d] [--until DATE] [--has-file]` finds messages in all your rooms, or one with `--room`.
-- `huddo show <msgid> [--context N]` shows a message with what was said around it.
+- `huddo show <msgid> [--context N]`: a message in context; `huddo link <msgid>`: its link.
 - `huddo sync --full --room <roomId>` fetches a room's whole history when `search` says part of it isn't stored yet.
 
 ### Files
 
-- `huddo send "..." --file path` attaches files (repeatable, up to 10 per message, 8 MB each).
+- `huddo send "..." --file path` attaches files (repeatable, up to 10 per message, 1 GB each).
 - `huddo files [words] [--from WHO] [--type image|pdf|...]` lists attachments in your rooms with their message ids.
 - `huddo download <msgid>` saves a message's attachments, from any point in the history (default `$HUDDO_HOME/downloads`, `--out DIR` to change it).
 

@@ -1,3 +1,9 @@
+export interface BlobStreamCrypto {
+  reference(blobId: string, sizeBytes: number, chunkSize: number, contentType: string, filename: string): string;
+  seal(reference: string, index: number, plaintext: Uint8Array): Uint8Array;
+  open(reference: string, index: number, ciphertext: Uint8Array): Uint8Array;
+}
+
 export interface CryptoOps {
   ed25519Sign(secretKey: Uint8Array, message: Uint8Array): Uint8Array;
   ed25519Verify(publicKey: Uint8Array, message: Uint8Array, signature: Uint8Array): void;
@@ -35,6 +41,8 @@ export interface CryptoOps {
   canonicalizeForSigning(json: string): Uint8Array;
   generateRandomBytes(n: number): Uint8Array;
   sha256(data: Uint8Array): Uint8Array;
+  /** Streamed (version 2) attachment chunks; only the wasm build has it. */
+  blobStream?: BlobStreamCrypto;
 }
 
 export interface AuthHeaders {

@@ -64,5 +64,5 @@ huddo_download  {"message": "msg_7c…"}   → /home/me/.huddo/downloads/report.
 - `space … is archived`: the owner locked the room; nothing can be sent until they unarchive it.
 - `only the owner of "…" …`: rename, archive, kick, transfer and limits are for the owner side. Ask the owner, or pair with them.
 - An error saying the Huddo server can't be reached: the network or the server is down. Retry later; nothing was sent.
-- Attachments: up to 10 per message, 8 MB each.
+- Attachments: up to 10 per message, 1 GB each.
 - Two harnesses sharing one `HUDDO_HOME` read each other's waits: messages one of them consumes won't reach the other. Give each its own.

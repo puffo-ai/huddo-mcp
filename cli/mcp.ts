@@ -2,6 +2,8 @@ import { createInterface } from "node:readline";
 import { ANSWER_PARAMS, answerArgs, FORM_PARAM, OPTION_PARAM } from "./choice-params";
 import { getRuntime } from "./runtime";
 import * as ops from "./ops";
+import * as links from "./message-links";
+import { asProp, need, num, roomProp, str, type Args, type Tool } from "./mcp-tools";
 import { notifyDaemon } from "./ipc";
 import { connectGuide } from "./help";
 import { VERSION } from "./version";
@@ -11,41 +13,6 @@ const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const WAIT_DEFAULT_S = 45;
 const WAIT_MAX_S = 50;
 const KEEP_LISTENING = "Keep calling huddo_wait to see replies.";
-
-type Args = Record<string, unknown>;
-
-interface Tool {
-  name: string;
-  description: string;
-  properties: Record<string, unknown>;
-  required?: string[];
-  readOnly?: boolean;
-  run(ctx: ops.Ctx, args: Args, signal: AbortSignal): Promise<string>;
-}
-
-const asProp = { as: { type: "string", description: "Identity slug to act as (default: the active identity)" } };
-const roomProp = {
-  room: { type: "string", description: "roomId or index from huddo_list, for this call only (default: the default room)" },
-};
-
-const str = (args: Args, key: string): string | undefined => {
-  const v = args[key];
-  if (v === undefined || v === null || v === "") return undefined;
-  if (typeof v !== "string") throw new ops.UserError(`${key} must be a string`);
-  return v;
-};
-const num = (args: Args, key: string): number | undefined => {
-  const v = args[key];
-  if (v === undefined || v === null) return undefined;
-  const n = Number(v);
-  if (!Number.isFinite(n) || n < 0) throw new ops.UserError(`${key} must be a non-negative number`);
-  return n;
-};
-const need = (args: Args, key: string): string => {
-  const v = str(args, key);
-  if (!v) throw new ops.UserError(`${key} is required`);
-  return v;
-};
 
 const TOOLS: Tool[] = [
   {
@@ -57,17 +24,19 @@ const TOOLS: Tool[] = [
   },
   {
     name: "huddo_join",
-    description: "Join a Huddo group chat by invite link or code; it becomes the default room. Creates your identity on first use, so pass name and avatar. Returns next steps to follow, including a pairing code for your operator unless you are already paired.",
+    description: "Join a Huddo group chat by invite link or code; it becomes the default room. Creates your identity on first use, so pass name and avatar. Returns next steps to follow, including a pairing code for your operator unless you are already paired. A message link (https://.../chat/ROOM?m=MSG, from huddo_link or the app's Copy link) joins its room the same way, then shows that message with the ones around it, or says why it can't.",
     properties: {
-      invite: { type: "string", description: "Invite URL (https://.../invite/CODE) or bare code" },
+      invite: { type: "string", description: "Invite URL (https://.../invite/CODE), bare code, or message link (https://.../chat/ROOM?m=MSG)" },
       name: { type: "string", description: "Your display name: the name you go by, or \"<model> (<harness>)\"" },
       avatar: { type: "string", description: "Your avatar (sets or replaces it): a local png/jpg/gif/webp/svg you generate (for example a small SVG that fits your name and role), or, if you can't make one, a library id from https://huddo.ai/agent-avatars/index.json" },
       ...asProp,
     },
     required: ["invite"],
     run: async (ctx, a) => {
-      const joined = await ops.join(ctx, need(a, "invite"), str(a, "name"), str(a, "avatar"));
-      return `${joined.text}\n${ops.onboardingText(await ops.onboarding(ctx, "join", joined.json.spaceId, null, "mcp"))}`;
+      const joined = await links.join(ctx, need(a, "invite"), str(a, "name"), str(a, "avatar"));
+      const next = ops.onboardingText(await ops.onboarding(ctx, "join", joined.json.spaceId, null, "mcp"));
+      const linked = "batch" in joined ? `\n${ops.formatBatch(joined.batch, false)}` : "";
+      return `${joined.text}\n${next}${linked}`;
     },
   },
   {
@@ -138,6 +107,18 @@ const TOOLS: Tool[] = [
     run: async (ctx, a) => ops.formatBatch(await ops.show(ctx, { id: need(a, "msgid"), room: str(a, "room"), context: num(a, "context") }), false),
   },
   {
+    name: "huddo_link",
+    readOnly: true,
+    description: "Get a link to one message, to share it: whoever opens it lands on that message, joining the room first when the room lets people join by its link. Pass it to another agent's huddo_join. Refuses whispers (a link would reach people the whisper wasn't for) and unsent messages.",
+    properties: {
+      msgid: { type: "string", description: "Message id (msg_...)" },
+      ...roomProp,
+      ...asProp,
+    },
+    required: ["msgid"],
+    run: async (ctx, a) => (await links.link(ctx, { id: need(a, "msgid"), room: str(a, "room") })).text,
+  },
+  {
     name: "huddo_files",
     readOnly: true,
     description:
@@ -166,7 +147,7 @@ const TOOLS: Tool[] = [
       text: { type: "string", description: "Message text" },
       ...roomProp,
       reply_to: { type: "string", description: "Message id (msg_...) this replies to" },
-      files: { type: "array", items: { type: "string" }, description: "Local file paths to attach (up to 10, 8 MB each)" },
+      files: { type: "array", items: { type: "string" }, description: "Local file paths to attach (up to 10, 1 GB each)" },
       mention: { type: "array", items: { type: "string" }, description: "Members to @mention by display name or slug (\"all\" for everyone); added to the start of the text" },
       option: OPTION_PARAM,
       form: FORM_PARAM,

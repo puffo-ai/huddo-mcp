@@ -3,6 +3,8 @@ import { HttpError } from "../../http/types";
 import type { PuffoHttpClient } from "../../http/client";
 import type { AttachmentReference } from "../../features/attachments/domain/attachment";
 import { imageSize } from "../../features/attachments/domain/image-size";
+import { MAX_ATTACHMENT_BYTES, isStreamedAttachment } from "../../features/attachments/domain/attachment";
+import { downloadLargeAttachment, uploadLargeAttachment, type LargeAttachmentProgress } from "./large-attachments";
 export {
   ATTACHMENT_CONTENT_TYPE,
   isAttachmentsContentType,
@@ -83,7 +85,12 @@ export async function encryptAndUploadAttachment(
     create: () => Promise<PreparedAttachmentUpload>,
   ) => Promise<PreparedAttachmentUpload>,
   suppliedPlaintext?: Uint8Array,
+  onProgress?: (progress: LargeAttachmentProgress) => void,
 ): Promise<AttachmentMeta> {
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    if (!crypto.blobStream) throw new Error("large attachments need the wasm crypto build");
+    return uploadLargeAttachment(crypto.blobStream, http, file, onProgress);
+  }
   const create = () => prepareAttachmentUpload(crypto, file, suppliedPlaintext);
   const prepared = transactionId && loadPrepared
     ? await loadPrepared(transactionId, create)
@@ -105,6 +112,16 @@ export async function downloadAndDecryptAttachment(
   http: PuffoHttpClient,
   meta: AttachmentMeta,
 ): Promise<Uint8Array> {
+  if (isStreamedAttachment(meta)) {
+    if (!crypto.blobStream) throw new Error("large attachments need the wasm crypto build");
+    const out = new Uint8Array(meta.size_bytes ?? meta.size);
+    let offset = 0;
+    await downloadLargeAttachment(crypto.blobStream, http, meta, (bytes) => {
+      out.set(bytes, offset);
+      offset += bytes.length;
+    });
+    return out;
+  }
   const path = `/blobs/${encodeURIComponent(meta.blob_id)}`;
   const delays = [0, 5_000, 5_000, 5_000];
   let lastErr: unknown;

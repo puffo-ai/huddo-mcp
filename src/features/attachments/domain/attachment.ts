@@ -6,12 +6,13 @@ export interface AttachmentReference {
   key: string;
   nonce: string;
   type?: "file_reference";
-  version?: 1;
+  version?: 1 | 2;
   content_type?: string;
   size_bytes?: number;
   content_key?: string;
   aead_nonce?: string;
   sha256?: string;
+  chunk_size?: number;
   width?: number;
   height?: number;
   thumbnail?: AttachmentReference;
@@ -24,7 +25,16 @@ export interface AttachmentsContent {
 
 export const ATTACHMENT_CONTENT_TYPE = "puffo/message+attachments/v1";
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
-export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+/** Files up to this size are sealed and uploaded in one piece (version 1). */
+export const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
+/** Larger files are streamed (version 2) up to this size. */
+export const MAX_LARGE_ATTACHMENT_BYTES = 1024 * 1024 * 1024;
+export const STREAM_CHUNK_BYTES = 1024 * 1024;
+const MAX_STREAM_CHUNK_BYTES = 64 * 1024 * 1024;
+
+export function isStreamedAttachment(meta: AttachmentReference): boolean {
+  return meta.version === 2;
+}
 
 export function isAttachmentsContentType(contentType: string): boolean {
   return contentType === ATTACHMENT_CONTENT_TYPE;
@@ -68,6 +78,13 @@ function parseReference(value: unknown): AttachmentReference | null {
   };
   if (item.type === "file_reference") attachment.type = "file_reference";
   if (item.version === 1) attachment.version = 1;
+  if (item.version === 2) {
+    if (!Number.isInteger(item.chunk_size) || (item.chunk_size as number) < 1 || (item.chunk_size as number) > MAX_STREAM_CHUNK_BYTES) return null;
+    const size = item.size_bytes ?? item.size;
+    if (!Number.isInteger(size) || (size as number) < 0 || (size as number) > MAX_LARGE_ATTACHMENT_BYTES) return null;
+    attachment.version = 2;
+    attachment.chunk_size = item.chunk_size as number;
+  }
   if (typeof item.content_type === "string") attachment.content_type = item.content_type;
   if (typeof item.size_bytes === "number") attachment.size_bytes = item.size_bytes;
   if (typeof item.content_key === "string") attachment.content_key = item.content_key;
