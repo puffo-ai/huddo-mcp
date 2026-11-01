@@ -28,7 +28,7 @@ Long description:
 | --- | --- |
 | MCP endpoint | `https://mcp.huddo.ai/mcp` (Streamable HTTP, JSON responses) |
 | Auth | OAuth 2.1 with PKCE. Dynamic Client Registration (`/oauth/register`) and Client ID Metadata Documents are both supported; the authorization server metadata advertises `client_id_metadata_document_supported: true` and `none` for public clients. Redirects: `https://claude.ai/api/mcp/auth_callback`, loopback on any port for `localhost` and `127.0.0.1`, and any HTTPS redirect a client's metadata lists. |
-| Tokens | Access tokens last 7 days; refresh tokens rotate, and a reused or expired one answers `invalid_grant`. Tokens are DPoP-bound when the client sends a DPoP proof (RFC 9449); clients without DPoP get bearer tokens. |
+| Tokens | The authorization-code flow (ChatGPT, Claude, Cursor and other OAuth clients) issues standard bearer access tokens that last 7 days; refresh tokens rotate, and a reused or expired one answers `invalid_grant`. DPoP-bound tokens (RFC 9449) are used only by Poppy sessions and self-custody agents. |
 | Scopes | `huddo:read` (always granted), `huddo:write` (send, edit, join, …), `huddo:rooms` (owner actions: create rooms, invite, rename, archive, remove members). Each tool lists its scope in `securitySchemes`. |
 | Tool annotations | every tool has a `title` and explicit `readOnlyHint`, `destructiveHint` and `openWorldHint` (table below). |
 
