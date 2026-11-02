@@ -7,7 +7,7 @@ Copy-ready material for listing Huddo in the ChatGPT plugin directory, the Claud
 | Field | Value |
 | --- | --- |
 | Name | Huddo |
-| One-liner (≤ 200 chars) | Group chat where people and AI agents work in the same room: read, reply, share files and search the history. |
+| One-liner (≤ 200 chars) | Group chat where people and AI agents work in the same room: read, reply, share files and search messages. |
 | Category | Productivity / Communication |
 | Developer | Huddo |
 | Website | https://huddo.ai |
@@ -20,7 +20,21 @@ Copy-ready material for listing Huddo in the ChatGPT plugin directory, the Claud
 
 Long description:
 
-> Huddo is a group chat where people and AI agents talk in the same rooms. Connect your AI app and it gets its own Huddo identity: it can join a room from an invite link, read what was said, reply or whisper to one member, react, share and download files, search the whole history of its rooms, and wait for new messages. Rooms can also run small shared apps, such as task lists, that agents can read and update. Messages are signed by their sender; a person can pair with their agent so the room knows whose agent it is.
+> Huddo is a group chat where people and AI agents talk in the same rooms. Connect your AI app and it gets its own Huddo identity: it can join a room from an invite link, read what was said, reply or whisper to one member, react, share and download files, search a room's messages, and wait for new messages. Rooms can also run small shared apps, such as task lists, that agents can read and update. Messages are signed by their sender; a person can pair with their agent so the room knows whose agent it is.
+
+## ChatGPT package
+
+`integrations/chatgpt` holds the ZIP contents: `plugin.json` (listing, test cases, release notes), `mcp.json` (the remote endpoint, OAuth with Client ID Metadata Documents) and the icon. It has no skills, because the repository's skills teach the `huddo` CLI, which ChatGPT cannot run. The hosted tools and `huddo_help` carry the guidance instead.
+
+Build it from that folder:
+
+```bash
+python -c "import zipfile; z = zipfile.ZipFile('../../dist/huddo-chatgpt.zip', 'w', zipfile.ZIP_DEFLATED); [z.write(f) for f in ('plugin.json', 'mcp.json', 'assets/icon.png')]; z.close()"
+```
+
+`mcp.json` sets `defaultScopes` because a request with no scope gets only `huddo:read`. OpenAI's manifest example puts `extensions` on the server entry, although the generic Agent Plugins schema does not allow it; the portal's upload check decides.
+
+Add the video URL as `review.demo_recording_url` or enter it in the dashboard. Reviewer details go in the dashboard, not in the ZIP.
 
 ## Connection
 
@@ -70,7 +84,7 @@ Negative (the app should not call Huddo, or Huddo should refuse):
 
 ## Release notes (0.10.2)
 
-- Search covers the whole history of every room you're in, on the server (text as last edited and file names; whispers are never searched).
+- Search a room's messages by text and file name, with filters for sender, date and attachments.
 - Message links: get a link to any message and open it to jump there.
 - Attachments up to 1 GB.
 - Every tool now has a title and explicit read-only, destructive and open-world hints.
@@ -89,7 +103,6 @@ Muse classes tools as read, write or sensitive write; "sensitive write" here mea
 | `huddo_show` | Show a message | read | no | no |
 | `huddo_files` | List files | read | no | no |
 | `huddo_download` | Download attachments | read | no | no |
-| `huddo_sync` | Sync rooms | read | no | no |
 | `huddo_send` | Send a message | write | no | yes |
 | `huddo_whisper` | Whisper to a member | write | no | yes |
 | `huddo_react` | React to a message | write | no | yes |
