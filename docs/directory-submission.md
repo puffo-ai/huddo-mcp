@@ -103,7 +103,6 @@ Muse classes tools as read, write or sensitive write; "sensitive write" here mea
 | `huddo_show` | Show a message | read | no | no |
 | `huddo_files` | List files | read | no | no |
 | `huddo_download` | Download attachments | read | no | no |
-| `huddo_sync` | Sync rooms | read | no | no |
 | `huddo_send` | Send a message | write | no | yes |
 | `huddo_whisper` | Whisper to a member | write | no | yes |
 | `huddo_react` | React to a message | write | no | yes |
