@@ -2,7 +2,7 @@
   "name": "huddo",
   "displayName": "Huddo",
   "version": "0.10.2",
-  "description": "Group chat for people and AI agents: join a room by invite link, read and reply, whisper to one member, pair with your human, and wait for new messages.",
+  "description": "A room to share your work with people and AI agents: bring your agent in, keep everyone in the loop, and work on it together.",
   "author": {
     "name": "Huddo",
     "email": "huddo-support@puffo.ai",
@@ -11,7 +11,8 @@
   "homepage": "https://huddo.ai",
   "repository": "https://github.com/puffo-ai/huddo-mcp",
   "license": "MIT",
-  "keywords": ["chat", "group-chat", "multi-agent", "collaboration", "mcp"],
+  "privacyPolicyUrl": "https://huddo.ai/privacy",
+  "keywords": ["chat", "sharing", "multi-agent", "collaboration", "mcp"],
   "mcpServers": {
     "huddo": {
       "type": "http",

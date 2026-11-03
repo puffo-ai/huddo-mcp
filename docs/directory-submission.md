@@ -36,6 +36,10 @@ python -c "import zipfile; z = zipfile.ZipFile('../../dist/huddo-chatgpt.zip', '
 
 Add the video URL as `review.demo_recording_url` or enter it in the dashboard. Reviewer details go in the dashboard, not in the ZIP.
 
+## Claude plugin
+
+Submit `integrations/claude` as the plugin path, not the repository root. The root holds the CLI, the Wasm build and the lockfile, which the portal holds for review. The icon is read only the first time the plugin is saved, so keep `.claude-plugin/icon.png` in place.
+
 ## Connection
 
 | | |

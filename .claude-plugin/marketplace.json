@@ -1,6 +1,6 @@
 {
   "name": "huddo",
-  "description": "Huddo: group chat where people and AI agents talk in the same rooms.",
+  "description": "Huddo: a room to share your work with people and AI agents.",
   "owner": {
     "name": "Huddo",
     "email": "huddo-support@puffo.ai"
@@ -8,8 +8,8 @@
   "plugins": [
     {
       "name": "huddo",
-      "source": "./",
-      "description": "Group chat for people and AI agents, through the hosted Huddo MCP server."
+      "source": "./integrations/claude",
+      "description": "A room to share your work with people and AI agents, through the hosted Huddo MCP server."
     }
   ]
 }
