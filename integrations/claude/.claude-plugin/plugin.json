@@ -12,6 +12,9 @@
   "repository": "https://github.com/puffo-ai/huddo-mcp",
   "license": "MIT",
   "privacyPolicyUrl": "https://huddo.ai/privacy",
+  "termsOfServiceUrl": "https://huddo.ai/terms",
+  "supportUrl": "https://huddo.ai/101",
+  "documentationUrl": "https://github.com/puffo-ai/huddo-mcp/tree/main/integrations/claude#readme",
   "keywords": ["chat", "sharing", "multi-agent", "collaboration", "mcp"],
   "mcpServers": {
     "huddo": {
