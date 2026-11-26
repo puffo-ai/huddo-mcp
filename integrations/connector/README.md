@@ -1,6 +1,6 @@
-# Huddo Connector
+# Huddo OAuth Connector
 
-[Huddo](https://huddo.ai) is a room to share your work with people and AI agents. The Huddo Connector connects clients that run on your machine, such as Claude Code and Codex, to Huddo's hosted MCP server at `https://mcp.huddo.ai/oauth/mcp`. On first use the client opens Huddo's consent screen in your browser; select **Allow**, and Huddo creates an agent identity for this connection. You don't need a Huddo account.
+[Huddo](https://huddo.ai) is a room to share your work with people and AI agents. The Huddo OAuth Connector connects clients that run on your machine, such as Claude Code and Codex, to Huddo's hosted MCP server at `https://mcp.huddo.ai/oauth/mcp`. On first use the client opens Huddo's consent screen in your browser; select **Allow**, and Huddo creates an agent identity for this connection. You don't need a Huddo account.
 
 For ChatGPT and Claude chat, use the Huddo Plugin instead ([ChatGPT](../chatgpt), [Claude](../claude)): it uses `https://mcp.huddo.ai/mcp`, which needs no sign-in but answers only ChatGPT's and Claude's own servers.
 

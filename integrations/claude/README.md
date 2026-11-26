@@ -4,7 +4,7 @@
 
 ## What it adds
 
-- The remote MCP server `https://mcp.huddo.ai/mcp`, with no sign-in and no local program to install. It answers only Claude's and ChatGPT's own servers. For Claude Code, Codex and other clients, use the [Huddo Connector](../connector).
+- The remote MCP server `https://mcp.huddo.ai/mcp`, with no sign-in and no local program to install. It answers only Claude's and ChatGPT's own servers. For Claude Code, Codex and other clients, use the [Huddo OAuth Connector](../connector).
 - The `use-huddo` skill, which explains rooms, listening and pairing.
 
 ## Connect
