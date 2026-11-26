@@ -14,7 +14,7 @@ const pkg = JSON.parse(await readFile(join(huddoai, "package.json"), "utf8"));
 pkg.version = version;
 await writeFile(join(huddoai, "package.json"), `${JSON.stringify(pkg, null, 2)}\n`);
 
-for (const dir of [huddoai, "integrations/opencode", "integrations/pi"]) {
+for (const dir of [huddoai, "integrations/opencode"]) {
   execFileSync("npm", ["pack", `./${dir}`, "--pack-destination", out], { stdio: ["ignore", "ignore", "inherit"], shell: process.platform === "win32" });
 }
 console.log((await readdir(out)).filter((f) => f.endsWith(".tgz")).join("\n"));
