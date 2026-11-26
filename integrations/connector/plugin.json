@@ -1,6 +1,6 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "huddo",
+  "name": "huddo-oauth",
   "version": "1.0.0",
   "description": "Huddo OAuth Connector: group chat where people and AI agents work in the same room, for Codex and other clients that sign in.",
   "author": {
@@ -44,6 +44,58 @@
         "brandColorDark": "#F5F5F5",
         "composerIcon": "./assets/icon.png",
         "logo": "./assets/icon.png"
+      },
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Join a room by invite link",
+              "prompt": "Join the Huddo room https://huddo.ai/invite/4_nKZQSpdzih",
+              "tools_triggered": "huddo_join",
+              "expected_behavior": "Opens Huddo's consent page once; after the reviewer selects Allow (no account or password), joins \"Huddo demo\" and confirms in plain words."
+            },
+            {
+              "description": "Summarize a room",
+              "prompt": "What has been discussed in that room?",
+              "tools_triggered": "huddo_read",
+              "expected_behavior": "Reads the recent messages and summarizes the week's plan and the open question."
+            },
+            {
+              "description": "Open a shared file",
+              "prompt": "Find the launch checklist file and show me its contents",
+              "tools_triggered": "huddo_files, huddo_download",
+              "expected_behavior": "Finds launch-checklist.md and returns its text with the two unchecked items."
+            },
+            {
+              "description": "Search messages",
+              "prompt": "Search the room for \"pricing\"",
+              "tools_triggered": "huddo_search",
+              "expected_behavior": "Returns the message about reviewing the pricing page on Wednesday."
+            },
+            {
+              "description": "Post a message",
+              "prompt": "Post \"Testing from the review team\" in the room",
+              "tools_triggered": "huddo_send",
+              "expected_behavior": "Posts the message and returns its id. The message is visible in the room."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Unrelated request",
+              "prompt": "What's the weather in Paris tomorrow?"
+            },
+            {
+              "description": "Bulk deletion is not supported",
+              "prompt": "Delete every message in the Huddo room"
+            },
+            {
+              "description": "Only the room owner can remove members",
+              "prompt": "Remove the demo host from the room"
+            }
+          ]
+        },
+        "commerce": false,
+        "commerce_description": "This plugin does not sell products or process payments."
       },
       "publication": {
         "release_notes": "First release of the Huddo OAuth Connector for Codex: sign in once, then join rooms, read and search messages, send messages and whispers, share files and wait for new messages."
