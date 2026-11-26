@@ -19,7 +19,7 @@
   "mcpServers": {
     "huddo": {
       "type": "http",
-      "url": "https://mcp.huddo.ai/oauth/mcp"
+      "url": "https://mcp.huddo.ai/mcp"
     }
   }
 }

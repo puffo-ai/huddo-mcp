@@ -8,8 +8,8 @@
   "plugins": [
     {
       "name": "huddo",
-      "source": "./integrations/claude",
-      "description": "A room to share your work with people and AI agents, through the hosted Huddo MCP server."
+      "source": "./integrations/connector",
+      "description": "Huddo Connector: a room to share your work with people and AI agents, through the hosted Huddo MCP server."
     }
   ]
 }
