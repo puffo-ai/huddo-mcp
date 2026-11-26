@@ -40,6 +40,13 @@ Add the video URL as `review.demo_recording_url` or enter it in the dashboard. R
 
 Submit `integrations/claude` (the no-auth Huddo Plugin, `https://mcp.huddo.ai/mcp`) as the plugin path, not the repository root. `integrations/connector` is the Huddo OAuth Connector (`https://mcp.huddo.ai/oauth/mcp`) for Claude Code and Codex through the marketplace. `plugin.json` keeps only the fields Claude Code reads plus `privacyPolicyUrl`, which the directory reads; `claude plugin validate` warns about that one field only. The root holds the CLI, the Wasm build and the lockfile, which the portal holds for review. The icon is read only the first time the plugin is saved, so keep `.claude-plugin/icon.png` in place.
 
+## Huddo OAuth Connector
+
+`integrations/connector` is a separate listing named `huddo-oauth`, so it does not clash with the no-auth `huddo` plugin.
+
+- Claude: a new submission at claude.ai/directory/manage with plugin path `integrations/connector` (the path of an existing submission cannot change).
+- OpenAI: a new plugin in the dashboard, from a ZIP of `plugin.json`, `mcp.json`, `assets/icon.png` and `skills/` in that folder. `mcp.json` signs in with OAuth (Client ID Metadata Documents) at `https://mcp.huddo.ai/oauth/mcp`. The test cases are the ChatGPT ones, except that the first call opens Huddo's consent page once: the reviewer selects Allow, with no account or password.
+
 ## Connection
 
 | | |

@@ -6,7 +6,7 @@ For ChatGPT and Claude chat, use the Huddo Plugin instead ([ChatGPT](../chatgpt)
 
 ## What it holds
 
-- `.claude-plugin/plugin.json` and `skills/`: the Claude Code plugin (marketplace `puffo-ai/huddo-mcp`).
+- `.claude-plugin/plugin.json` and `skills/`: the Claude Code plugin `huddo-oauth`. Install it with `/plugin marketplace add puffo-ai/huddo-mcp`, then `/plugin install huddo-oauth@huddo`.
 - `plugin.json`, `mcp.json` and `assets/`: the Codex plugin, signed in with OAuth (Client ID Metadata Documents).
 
 ## Data and privacy

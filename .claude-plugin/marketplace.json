@@ -7,7 +7,7 @@
   },
   "plugins": [
     {
-      "name": "huddo",
+      "name": "huddo-oauth",
       "source": "./integrations/connector",
       "description": "Huddo OAuth Connector: a room to share your work with people and AI agents, through the hosted Huddo MCP server."
     }
