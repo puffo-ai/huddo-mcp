@@ -4,8 +4,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "skills");
-const skillIds = ["use-huddo", "use-huddo-local-mcp", "use-huddo-room-apps"];
-const mcpServer = { type: "local" as const, command: ["npx", "-y", "huddoai", "mcp"] };
+const skillIds = ["use-huddo", "use-huddo-room-apps"];
+const mcpServer = { type: "remote" as const, url: "https://mcp.huddo.ai/oauth/mcp" };
 
 export const HuddoPlugin: Plugin = async () => ({
   async config(input) {

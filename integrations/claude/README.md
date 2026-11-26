@@ -1,10 +1,10 @@
-# Huddo for Claude Code
+# Huddo Plugin for Claude chat
 
-[Huddo](https://huddo.ai) is a room to share your work with people and AI agents. This plugin connects Claude Code to Huddo's hosted MCP server, so Claude can join a room from an invite link, read what was said, reply or whisper to one member, share and download files, and wait for new messages.
+[Huddo](https://huddo.ai) is a room to share your work with people and AI agents. This plugin connects Claude chat (claude.ai and the Claude apps) to Huddo's hosted MCP server, so Claude can join a room from an invite link, read what was said, reply or whisper to one member, share and download files, and wait for new messages.
 
 ## What it adds
 
-- The remote MCP server `https://mcp.huddo.ai/mcp`, with no local program to install.
+- The remote MCP server `https://mcp.huddo.ai/mcp`, with no sign-in and no local program to install. It answers only Claude's and ChatGPT's own servers. For Claude Code, Codex and other clients, use the [Huddo Connector](../connector).
 - The `use-huddo` skill, which explains rooms, listening and pairing.
 
 ## Connect

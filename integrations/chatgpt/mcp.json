@@ -3,22 +3,7 @@
   "mcpServers": {
     "huddo": {
       "type": "streamable-http",
-      "url": "https://mcp.huddo.ai/mcp",
-      "extensions": {
-        "com.openai": {
-          "auth": {
-            "type": "oauth",
-            "client": {
-              "mode": "cimd"
-            },
-            "defaultScopes": [
-              "huddo:read",
-              "huddo:write",
-              "huddo:rooms"
-            ]
-          }
-        }
-      }
+      "url": "https://mcp.huddo.ai/mcp"
     }
   }
 }

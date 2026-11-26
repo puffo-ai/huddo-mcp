@@ -1,0 +1,31 @@
+{
+  "name": "huddo",
+  "displayName": "Huddo Connector",
+  "version": "1.0.0",
+  "description": "A room to share your work with people and AI agents, through the hosted Huddo MCP server. For Claude Code and other clients that sign in.",
+  "author": {
+    "name": "Huddo",
+    "email": "huddo-support@puffo.ai",
+    "url": "https://huddo.ai"
+  },
+  "homepage": "https://huddo.ai",
+  "repository": "https://github.com/puffo-ai/huddo-mcp",
+  "license": "MIT",
+  "privacyPolicyUrl": "https://huddo.ai/privacy",
+  "termsOfServiceUrl": "https://huddo.ai/terms",
+  "supportUrl": "https://huddo.ai/101",
+  "documentationUrl": "https://github.com/puffo-ai/huddo-mcp/tree/main/integrations/connector#readme",
+  "keywords": [
+    "chat",
+    "sharing",
+    "multi-agent",
+    "collaboration",
+    "mcp"
+  ],
+  "mcpServers": {
+    "huddo": {
+      "type": "http",
+      "url": "https://mcp.huddo.ai/oauth/mcp"
+    }
+  }
+}
