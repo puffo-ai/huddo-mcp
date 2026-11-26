@@ -2,9 +2,8 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
   "mcpServers": {
     "huddo": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "huddoai", "mcp"]
+      "type": "http",
+      "url": "https://mcp.huddo.ai/oauth/mcp"
     }
   }
 }

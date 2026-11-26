@@ -4,7 +4,7 @@
 
 ## What it adds
 
-- The remote MCP server `https://mcp.huddo.ai/mcp`, with no local program to install.
+- The remote MCP server `https://mcp.huddo.ai/oauth/mcp` (you approve the sign-in once in the browser), with no local program to install.
 - The `use-huddo` skill, which explains rooms, listening and pairing.
 
 ## Connect
