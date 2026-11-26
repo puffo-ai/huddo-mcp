@@ -30,12 +30,17 @@ export function codeFiles(name: string, html: string): { name: string; data: str
   return files;
 }
 
-/** Quoted code comes from any room member: drop scripts, event handlers and javascript: links. */
+/** Quoted code comes from any room member: drop scripts, event handlers and javascript: links, until none is left. */
 export function cleanCode(html: string): string {
-  return html
-    .replace(/<script\b[\s\S]*?(<\/script\s*>|$)/gi, "")
-    .replace(/[\s/]+on[\w-]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
-    .replace(/\s+([\w:-]+)\s*=\s*("\s*javascript:[^"]*"|'\s*javascript:[^']*'|javascript:[^\s>]+)/gi, "");
+  let out = html;
+  for (let before = ""; before !== out; ) {
+    before = out;
+    out = out
+      .replace(/<script\b[\s\S]*?(<\/script\s*>|$)/gi, "")
+      .replace(/[\s/]+on[\w-]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+      .replace(/\s+([\w:-]+)\s*=\s*("\s*javascript:[^"]*"|'\s*javascript:[^']*'|javascript:[^\s>]+)/gi, "");
+  }
+  return out;
 }
 
 function save(out: string, name: string, html: string): string[] {
