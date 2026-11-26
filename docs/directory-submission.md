@@ -24,7 +24,7 @@ Long description:
 
 ## ChatGPT package
 
-`integrations/chatgpt` holds the ZIP contents: `plugin.json` (listing, test cases, release notes), `mcp.json` (the no-auth endpoint `https://mcp.huddo.ai/mcp`) and the icon. It has no skills, because the repository's skills teach the `huddo` CLI, which ChatGPT cannot run. The hosted tools and `huddo_help` carry the guidance instead.
+`integrations/chatgpt` holds the ZIP contents: `plugin.json` (listing, test cases, release notes), `mcp.json` (the no-auth endpoint `https://mcp.huddo.ai/mcp`, with `extensions["com.openai"].auth.type` `"none"`: without it the portal assumes OAuth) and the icon. It has no skills, because the repository's skills teach the `huddo` CLI, which ChatGPT cannot run. The hosted tools and `huddo_help` carry the guidance instead.
 
 Build it from that folder:
 
