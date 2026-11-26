@@ -1,10 +1,11 @@
 import { HttpError } from "../src/http/types";
 import { fetchSpaces } from "../src/features/spaces/adapters";
 import { messageLink, targetFromSearch, type MessageTarget } from "../src/huddo/message-link";
+import { roomIdFromJoinTarget } from "../src/huddo/room-link";
 import { updateProfile } from "../src/ui/services/profile-service";
 import { ORIGIN, type Room } from "./home";
 import * as ops from "./ops";
-import { fetchAround, type Row } from "./rows";
+import { rowsAround, type Row } from "./rows";
 import { activeSlug, type Account } from "./runtime";
 import { mergeRevisions } from "./store";
 import { UserError } from "./text-args";
@@ -24,7 +25,7 @@ export function parseMessageLink(arg: string, origin = ORIGIN): MessageTarget | 
   const [route, roomId, ...rest] = url.pathname.split("/").filter(Boolean);
   const target = route === "chat" && roomId && rest.length === 0 ? targetFromSearch(roomId, url.search) : null;
   const home = new URL(origin).host;
-  if (target && url.host !== home) throw new UserError(`not a Huddo message link: it points at ${url.host}, and this huddo is ${home}`);
+  if (target && url.host !== home) throw new UserError(`not a Huddo message link: it points at ${url.host}, and this Huddo server is ${home}`);
   return target;
 }
 
@@ -44,17 +45,32 @@ async function roomLinkCode(ctx: ops.Ctx, roomId: string): Promise<string | null
     const body = await ctx.rt.http().getUnsigned<{ code?: unknown }>(`/v2/invitations/rooms/${encodeURIComponent(roomId)}`);
     return typeof body?.code === "string" && body.code ? body.code : null;
   } catch (e) {
+    if (e instanceof HttpError && e.status === 429) throw new UserError("too many room lookups from this address: try again in a minute");
     if (e instanceof HttpError && e.status >= 400 && e.status < 500) return null;
     throw e;
   }
 }
 
-/** `join` for an invite or a message link. A message link is the room's own link: joining takes the room's
- *  link code, and a member of a room closed to link joins still opens it. Then the message is shown, or why
- *  it can't be. */
+function refuseOtherHost(arg: string): void {
+  if (!/^https?:/i.test(arg.trim())) return;
+  const { host } = new URL(arg.trim());
+  const home = new URL(ORIGIN).host;
+  if (host !== home) throw new UserError(`not a link to this Huddo: it points at ${host}, and this Huddo server is ${home}`);
+}
+
+/** `join` for an invite, a room id or link, or a message link. A room's id and links stand for its own link:
+ *  joining takes the room's link code, and a member of a room closed to link joins still opens it. A message
+ *  link then shows the message, or why it can't be shown. */
 export async function join(ctx: ops.Ctx, invite: string, name?: string, avatar?: string) {
   const target = parseMessageLink(invite);
-  if (!target) return ops.join(ctx, invite, name, avatar);
+  if (!target) {
+    const roomId = roomIdFromJoinTarget(invite);
+    if (!roomId) return ops.join(ctx, invite, name, avatar);
+    refuseOtherHost(invite);
+    ops.checkName(name);
+    const code = await roomLinkCode(ctx, roomId);
+    return code ? ops.join(ctx, code, name, avatar) : openAsMember(ctx, roomId, name, avatar);
+  }
   ops.checkName(name);
   const code = await roomLinkCode(ctx, target.roomId);
   const joined = await (code ? ops.join(ctx, code, name, avatar) : openAsMember(ctx, target.roomId, name, avatar));
@@ -75,12 +91,12 @@ async function openAsMember(ctx: ops.Ctx, roomId: string, name?: string, avatar?
   if (avatar) await ops.setAvatar(ctx, await ops.avatarBytes(avatar));
   await ops.makeDefault(acct, room);
   return {
-    json: { slug: acct.identity.slug, created: false, joined: false, ...room },
+    json: { slug: acct.identity.slug, created: false, joined: false, spaceId: room.spaceId, name: room.name },
     text: `as ${ops.nameAndSlug(await ops.ownName(acct, name), acct.identity.slug)}: already in "${room.name}" (${room.spaceId})`,
   };
 }
 
-async function linkedMessage(ctx: ops.Ctx, room: Room, id: string): Promise<ops.MessageBatch> {
+async function linkedMessage(ctx: ops.Ctx, room: Pick<Room, "spaceId" | "name">, id: string): Promise<ops.MessageBatch> {
   try {
     // Straight to the server's window: a linked message is often older than a fresh join's first page.
     const batch = await ops.show(ctx, { id, room: room.spaceId, pages: 0 });
@@ -95,17 +111,13 @@ async function linkedMessage(ctx: ops.Ctx, room: Room, id: string): Promise<ops.
 }
 
 /** The message among the stored messages after paging back up to `pages` pages, or else in the server's
- *  window around it (not stored: it may sit past a gap). A server without that window gets the full paging. */
+ *  window around it (not stored: it may sit past a gap). */
 export async function locate(acct: Account, room: Room, id: string, pages = ops.FIND_PAGES): Promise<{ rows: Row[]; merged: Row[]; at: number }> {
   const rows = await ops.storedUntil(acct, room, (all) => all.some((r) => r.id === id), pages);
   const merged = mergeRevisions(rows);
   const at = merged.findIndex((r) => r.id === id);
   if (at >= 0) return { rows, merged, at };
-  const window = await fetchAround(acct.http, room.channelId, id);
-  if (window === "unsupported") {
-    if (pages < ops.FIND_PAGES) return locate(acct, room, id, ops.FIND_PAGES);
-    throw ops.notFound(id, room, acct.identity.slug);
-  }
+  const window = await rowsAround(room.channelId, id);
   const shown = window === "unavailable" ? [] : mergeRevisions(window);
   const found = shown.findIndex((r) => r.id === id);
   if (found < 0) throw new UserError(`message ${id} isn't available in "${room.name}" (${room.spaceId}): it was deleted or unsent, or you can't see it`);

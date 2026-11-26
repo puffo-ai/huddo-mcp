@@ -1,12 +1,11 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { SERVER_URL, homeDir, listIdentitySlugs, loadConfig, readJson, removeFile, writeJson } from "./home";
-import { Deadline, NetworkError } from "./deadline";
-import type { MessageBatch, WaitOptions } from "./ops";
+import { SERVER_URL, homeDir, identityDir, listIdentitySlugs, loadConfig, localEndpoint, readJson, removeFile, writeJson } from "./home";
+import type { Deadline } from "./deadline";
 
 export interface DaemonHello {
   pid: number;
@@ -36,21 +35,23 @@ export interface DaemonInfo {
 const HANDSHAKE_MS = 8_000;
 const BACKGROUND_HANDSHAKE_MS = 3_000;
 const FAILURE_BACKOFF_MS = 60_000;
+const DEVICE_FAILURE_HOLD_MS = 60 * 60_000;
 
 export function daemonEnabled(): boolean {
   return process.env.HUDDO_DAEMON !== "0";
 }
 
-export function daemonEndpoint(): string {
-  const home = resolve(homeDir());
-  if (process.platform === "win32") {
-    return `\\\\.\\pipe\\huddo-${createHash("sha256").update(home.toLowerCase()).digest("hex").slice(0, 16)}`;
-  }
-  return join(home, "daemon.sock");
-}
+export const daemonEndpoint = () => localEndpoint("daemon");
 
 export const daemonInfoPath = () => join(homeDir(), "daemon.json");
 const failurePath = () => join(homeDir(), "daemon-failed.json");
+
+// The CLI reports this reason instead of spawning another daemon (see
+// recentFailure): for 60s, or, for a `device` the server rejected, for an hour
+// unless the active identity's device changes (`join`, `identity use`).
+export function recordDaemonFailure(reason: string, device?: string): void {
+  writeJson(failurePath(), { at: Date.now(), reason, ...(device ? { device } : {}) });
+}
 
 export function daemonLogPath(): string {
   return join(homeDir(), "daemon.log");
@@ -155,10 +156,17 @@ export function warnDaemonUnavailable(reason: string): void {
   process.stderr.write(`warning: huddo daemon unavailable (${reason}); using direct mode\n`);
 }
 
-function recentFailure(): string | null {
-  const failed = readJson<{ at: number; reason: string }>(failurePath());
-  if (!failed || Date.now() - failed.at > FAILURE_BACKOFF_MS) return null;
+export function recentFailure(): string | null {
+  const failed = readJson<{ at: number; reason: string; device?: string }>(failurePath());
+  if (!failed) return null;
+  if (failed.device !== undefined && failed.device !== activeDeviceId()) return null;
+  if (Date.now() - failed.at > (failed.device === undefined ? FAILURE_BACKOFF_MS : DEVICE_FAILURE_HOLD_MS)) return null;
   return failed.reason;
+}
+
+function activeDeviceId(): string | undefined {
+  const slug = loadConfig().active;
+  return slug ? readJson<{ device_id?: string }>(join(identityDir(slug), "identity.json"))?.device_id : undefined;
 }
 
 function spawnDaemon(): { exited: () => string | null } {
@@ -232,40 +240,7 @@ export async function notifyDaemon(op: string, payload: Record<string, unknown> 
   await request(op, payload, { timeoutMs: 1_500 }).catch(() => undefined);
 }
 
-export async function commitLease(lease: string): Promise<boolean> {
-  const reply = await request("commit", { lease }, { timeoutMs: 3_000 }).catch(() => null);
-  return reply?.committed === true;
-}
-
-export async function waitViaDaemon(slug: string, opts: WaitOptions): Promise<MessageBatch | null> {
-  const dl = new Deadline(opts.deadline, opts.signal);
-  const ensured = await ensureDaemon({ wait: true, timeoutMs: Math.max(0, dl.remaining() - 500) });
-  if (!ensured.hello) {
-    if (ensured.reason) warnDaemonUnavailable(ensured.reason);
-    return null;
-  }
-  if (dl.expired()) return { groups: [], names: {}, synced: false };
-  let reply: DaemonReply;
-  try {
-    reply = await request(
-      "wait",
-      { slug, room: opts.room, timeoutMs: Math.max(0, dl.remaining() - 250) },
-      { timeoutMs: dl.remaining() + 1_000, signal: opts.signal },
-    );
-  } catch (e) {
-    if (dl.expired()) return { groups: [], names: {}, synced: false };
-    warnDaemonUnavailable(`local IPC failed: ${(e as Error).message}`);
-    return null;
-  }
-  if (reply.ok) {
-    return {
-      groups: reply.groups as MessageBatch["groups"],
-      names: (reply.names ?? {}) as Record<string, string>,
-      synced: reply.synced !== false,
-      lease: typeof reply.lease === "string" ? reply.lease : undefined,
-    };
-  }
-  if (reply.code === "unserved") return null;
-  if (reply.code === "network") throw new NetworkError(`cannot reach the Huddo server: ${reply.error ?? "unknown error"}`);
-  throw new Error(reply.error ?? "daemon error");
+export function sameToken(given: unknown, expected: string): boolean {
+  if (typeof given !== "string" || given.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(given), Buffer.from(expected));
 }

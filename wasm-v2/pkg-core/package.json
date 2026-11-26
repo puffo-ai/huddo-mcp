@@ -1,0 +1,17 @@
+{
+  "name": "puffo-crypto-wasm-v2",
+  "type": "module",
+  "description": "Prebuilt Huddo core (WebAssembly)",
+  "version": "0.1.0",
+  "license": "MIT",
+  "files": [
+    "puffo_core_bg.wasm",
+    "puffo_core.js",
+    "puffo_core.d.ts"
+  ],
+  "main": "puffo_core.js",
+  "types": "puffo_core.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

@@ -1,4 +1,5 @@
 import { HttpError } from "../http/types";
+import { asSentence, errorText } from "./error-text";
 import { queryMerged } from "../http/query-ids";
 import type { SignedHttp } from "./presence";
 
@@ -27,9 +28,9 @@ export class PairingError extends Error {
 }
 
 const FRIENDLY: Record<number, string> = {
-  403: "not a member of this huddo",
-  404: "no agent in this huddo is waiting with that code",
-  409: "code already in use in this huddo; pick another",
+  403: "not a member of this room",
+  404: "no agent in this room is waiting with that code",
+  409: "code already in use in this room; pick another",
   429: "too many wrong codes; wait a few minutes",
 };
 
@@ -48,6 +49,30 @@ async function call<T>(run: () => Promise<T>): Promise<T> {
     }
     throw new PairingError(e.status, message ?? `pairing failed (${e.status})`);
   }
+}
+
+/** What a six-box code entry says when the server refuses the code (pairing, linking a phone). */
+export const INCORRECT_CODE_TEXT = "Incorrect code. Try again.";
+
+// The Pair screen speaks to a person in sentences; FRIENDLY above stays as the CLI's short reasons.
+const PAIR_SCREEN_TEXT: Record<number, string> = {
+  403: "You're not a member of this room.",
+  409: "That code is already in use in this room. Ask your agent for a new one.",
+  429: "Too many wrong codes. Wait a few minutes, then try again.",
+};
+
+/**
+ * What the Pair screens say when a code is refused. The server answers 404 for a wrong and an expired code alike,
+ * so both read as one message; `wrong` marks it so the boxes can show it.
+ */
+export function pairErrorText(err: unknown): { text: string; wrong: boolean } {
+  if (err instanceof PairingError && err.status === 404) return { text: INCORRECT_CODE_TEXT, wrong: true };
+  if (err instanceof PairingError) {
+    // A reason the server gave (such as an agent that is itself an operator) reads as a sentence; a bare status doesn't.
+    const reason = PAIR_SCREEN_TEXT[err.status] ?? (err.message.startsWith("pairing failed (") ? "Pairing didn't work. Try again." : asSentence(err.message));
+    return { text: reason, wrong: false };
+  }
+  return { text: errorText(err, "account"), wrong: false };
 }
 
 export function randomPairingCode(randomBytes: (n: number) => Uint8Array): string {
@@ -76,6 +101,20 @@ export function unpairAgent(http: SignedHttp, agent: string) {
   return call(() => http.post<{ agent: string; operator: string }>("/v2/pairings/unpair", { agent }));
 }
 
+/**
+ * Unpairs `agent` from `operator`. When the request fails, the pairing is read again first: an unpair whose answer
+ * was lost may have gone through, and then it has nothing to retry. It still fails when the pair is there, or can't
+ * be read.
+ */
+export async function unpairChecked(http: SignedHttp, agent: string, operator: string): Promise<void> {
+  try {
+    await unpairAgent(http, agent);
+  } catch (err) {
+    const pairs = await fetchPairs(http, [agent]).catch(() => null);
+    if (!pairs || pairs[agent] === operator) throw err;
+  }
+}
+
 export async function fetchPairs(http: SignedHttp, slugs: readonly string[]): Promise<PairMap> {
   return queryMerged(slugs, (chunk) => call(() => http.post<PairMap>("/v2/pairings/query", { slugs: chunk })));
 }
@@ -96,14 +135,10 @@ export function isPeer(sender: string, pairs: PairMap, self?: string | null): bo
 }
 
 export function operatorTag(sender: string, pairs: PairMap, self?: string | null): string {
-  if (self && pairs[self] === sender) return "[your operator]";
+  if (self && pairs[self] === sender) return "[paired with you]";
   if (isPeer(sender, pairs, self)) return "[peer]";
   const agent = operatorOf(pairs, sender);
-  return agent ? `[operator_of: ${agent}]` : "";
-}
-
-export function memberType(slug: string, identityType: string | null | undefined, pairs: PairMap): string | null {
-  return pairs[slug] ? "agent" : identityType ?? null;
+  return agent ? `[paired with: ${agent}]` : "";
 }
 
 export function readPairingAnnouncement(content: unknown): PairingAnnouncement | null {

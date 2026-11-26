@@ -1,69 +1,46 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { PuffoHttpClient } from "../src/http/client";
-import { identityDir, readJson, writeJson } from "./home";
-import { fetchPage, fetchSince, type Row } from "./rows";
+import { matchesSearch, type SearchQuery } from "../src/huddo/search-match";
+import { awaitCoreMessageReader } from "../src/application/runtime/core-message-reader-port";
+import { identityDir } from "./home";
+import { rowFromStored, type Row } from "./rows";
 
-export const JOIN_BACKFILL = 100;
-export const JOIN_BACKFILL_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const PAGE = 100;
+/** Every row core holds for a room; a room's history is read whole, as the old local store was. */
+const ALL_ROWS = 100_000;
 
 export interface RoomMeta {
   channelId: string;
-  seeded: boolean;
   complete: boolean;
-  maxSeq: number;
-  oldest: { sentAt: number; id: string } | null;
 }
 
-function roomDir(slug: string, channelId: string): string {
-  return join(identityDir(slug), "store", "rooms", encodeURIComponent(channelId));
-}
-
-const metaPath = (slug: string, channelId: string) => join(roomDir(slug, channelId), "meta.json");
-const linesPath = (slug: string, channelId: string) => join(roomDir(slug, channelId), "messages.jsonl");
-
-export function loadMeta(slug: string, channelId: string): RoomMeta {
-  return readJson<RoomMeta>(metaPath(slug, channelId)) ?? { channelId, seeded: false, complete: false, maxSeq: 0, oldest: null };
-}
-
-function saveMeta(slug: string, meta: RoomMeta): void {
-  writeJson(metaPath(slug, meta.channelId), meta);
-}
-
-export function appendRows(slug: string, channelId: string, rows: Row[]): RoomMeta {
-  const meta = loadMeta(slug, channelId);
-  const kept = rows.filter((r) => r.seq > 0);
-  if (!kept.length) return meta;
-  const dir = roomDir(slug, channelId);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  appendFileSync(
-    linesPath(slug, channelId),
-    kept.map(({ reactions: _reactions, ...row }) => `${JSON.stringify(row)}\n`).join(""),
-    { mode: 0o600 },
-  );
-  for (const r of kept) {
-    meta.maxSeq = Math.max(meta.maxSeq, r.seq);
-    if (!meta.oldest || r.sentAt < meta.oldest.sentAt || (r.sentAt === meta.oldest.sentAt && r.id < meta.oldest.id)) {
-      meta.oldest = { sentAt: r.sentAt, id: r.id };
-    }
-  }
-  saveMeta(slug, meta);
-  return meta;
-}
-
-export function storedRows(slug: string, channelId: string): Row[] {
-  const path = linesPath(slug, channelId);
-  if (!existsSync(path)) return [];
+/** The rows core holds for the room, oldest first. */
+export async function storedRows(channelId: string): Promise<Row[]> {
+  const reader = await awaitCoreMessageReader();
+  const messages = (await reader.getChannelHistory(channelId, ALL_ROWS)) ?? [];
   const bySeq = new Map<number, Row>();
-  for (const line of readFileSync(path, "utf8").split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const row = JSON.parse(line) as Row;
-      bySeq.set(row.seq, row);
-    } catch {}
+  for (const message of messages) {
+    const row = rowFromStored(message, channelId);
+    if (row) bySeq.set(row.seq, row);
   }
   return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+}
+
+export async function loadMeta(channelId: string): Promise<RoomMeta> {
+  const window = await (await awaitCoreMessageReader()).historyWindow(channelId);
+  return { channelId, complete: window?.complete ?? false };
+}
+
+/** Brings the room's newest messages into core. */
+export async function syncRoom(channelId: string): Promise<RoomMeta> {
+  await (await awaitCoreMessageReader()).backfillChannel(channelId, PAGE);
+  return loadMeta(channelId);
+}
+
+/** Brings one page of older messages into core. */
+export async function extendBack(channelId: string): Promise<RoomMeta> {
+  const { complete } = await (await awaitCoreMessageReader()).loadOlder(channelId, PAGE);
+  return { channelId, complete };
 }
 
 export function mergeRevisions(rows: Row[]): Row[] {
@@ -72,7 +49,7 @@ export function mergeRevisions(rows: Row[]): Row[] {
   for (const row of rows) {
     if (row.revision) {
       const target = byId.get(row.revision.target);
-      if (!target) continue;
+      if (!target || target.sender !== row.sender) continue;
       if (row.revision.kind === "unsend") Object.assign(target, { text: "", attachments: [], unsent: true });
       else if (!target.unsent) Object.assign(target, { text: row.text, edited: row.sentAt });
       continue;
@@ -84,34 +61,33 @@ export function mergeRevisions(rows: Row[]): Row[] {
   return out;
 }
 
-export async function syncRoom(http: PuffoHttpClient, slug: string, channelId: string, now = Date.now()): Promise<RoomMeta> {
-  let meta = loadMeta(slug, channelId);
-  if (!meta.seeded) {
-    const page = await fetchPage(http, channelId, JOIN_BACKFILL);
-    const recent = page.rows.filter((r) => r.sentAt >= now - JOIN_BACKFILL_MAX_AGE_MS);
-    meta = appendRows(slug, channelId, recent);
-    meta.seeded = true;
-    meta.complete = !page.next && recent.length === page.rows.length;
-    meta.maxSeq = Math.max(meta.maxSeq, page.maxSeq);
-    saveMeta(slug, meta);
+/** `rows` with the text and files of each unsent message removed; `known` holds the unsend events seen so far. */
+export function hideUnsent(rows: Row[], known: Row[]): Row[] {
+  const senders = new Map<string, string>();
+  for (const row of [...known, ...rows]) {
+    if (row.revision?.kind === "unsend") senders.set(row.revision.target, row.sender);
   }
-  if (meta.maxSeq) {
-    const got = await fetchSince(http, channelId, meta.maxSeq, Infinity);
-    meta = appendRows(slug, channelId, got.rows);
-  }
-  return meta;
+  return rows.map((row) =>
+    !row.revision && senders.get(row.id) === row.sender ? { ...row, text: "", attachments: [], unsent: true } : row,
+  );
 }
 
-export async function extendBack(http: PuffoHttpClient, slug: string, channelId: string): Promise<RoomMeta> {
-  let meta = loadMeta(slug, channelId);
-  if (meta.complete) return meta;
-  const page = await fetchPage(http, channelId, PAGE, meta.oldest ? { before: meta.oldest.sentAt, beforeId: meta.oldest.id } : undefined);
-  meta = appendRows(slug, channelId, page.rows);
-  if (!page.next) {
-    meta.complete = true;
-    saveMeta(slug, meta);
-  }
-  return meta;
+const legacyRoomsDir = (slug: string) => join(identityDir(slug), "store", "rooms");
+
+/** Rooms the CLI kept in its own files before core, with how many rows each held. */
+export function legacyRooms(slug: string): { channelId: string; rows: number }[] {
+  const dir = legacyRoomsDir(slug);
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).map((name) => {
+    const lines = join(dir, name, "messages.jsonl");
+    const rows = existsSync(lines) ? readFileSync(lines, "utf8").split("\n").filter((line) => line.trim()).length : 0;
+    return { channelId: decodeURIComponent(name), rows };
+  });
+}
+
+/** Keeps the old files, renamed: they may hold the only readable copy of whispers to an old device. */
+export function retireLegacyRooms(slug: string): void {
+  renameSync(legacyRoomsDir(slug), `${legacyRoomsDir(slug)}.migrated-${Date.now()}`);
 }
 
 function filePath(slug: string, blobId: string): string {
@@ -130,24 +106,9 @@ export function cacheFile(slug: string, blobId: string, bytes: Uint8Array): stri
   return path;
 }
 
-export interface SearchQuery {
-  text?: string;
-  from?: ReadonlySet<string>;
-  since?: number;
-  until?: number;
-  hasFile?: boolean;
-}
+export type { SearchQuery };
 
 export function matches(row: Row, q: SearchQuery): boolean {
   if (row.system) return false;
-  if (q.from && !q.from.has(row.sender)) return false;
-  if (q.since !== undefined && row.sentAt < q.since) return false;
-  if (q.until !== undefined && row.sentAt > q.until) return false;
-  if (q.hasFile && !row.attachments.length) return false;
-  if (q.text) {
-    const needle = q.text.toLowerCase();
-    const hay = [row.text, ...row.attachments.map((a) => a.filename)].join("\n").toLowerCase();
-    if (!hay.includes(needle)) return false;
-  }
-  return true;
+  return matchesSearch({ text: row.text, filenames: row.attachments.map((a) => a.filename), sender: row.sender, sentAt: row.sentAt }, q);
 }

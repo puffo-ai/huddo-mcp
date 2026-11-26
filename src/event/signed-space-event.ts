@@ -2,6 +2,9 @@ import type { PuffoHttpClient } from "../http/client";
 import type { CryptoOps } from "../http/types";
 import { transportSigningPort } from "../application/runtime/transport-signing-port";
 
+/** The request header that carries a room invite code; never part of a signed event (huddo-server#119). */
+export const ROOM_CODE_HEADER = "X-Huddo-Beta-Code";
+
 export interface SignedSpaceEvent {
   type: "signed_event";
   version: 1;
@@ -78,13 +81,17 @@ export async function postSpaceEvents(
   http: PuffoHttpClient,
   spaceId: string,
   events: SignedSpaceEvent[],
-  options?: { isEncrypted?: boolean },
+  options?: { isEncrypted?: boolean; betaCode?: string },
 ): Promise<PostSpaceEventsResponse> {
-  return http.post<PostSpaceEventsResponse>("/spaces/events", {
-    space_id: spaceId,
-    events: events as unknown as Record<string, unknown>[],
-    ...(options?.isEncrypted !== undefined
-      ? { is_encrypted: options.isEncrypted }
-      : {}),
-  } as unknown as Record<string, unknown>);
+  return http.post<PostSpaceEventsResponse>(
+    "/spaces/events",
+    {
+      space_id: spaceId,
+      events: events as unknown as Record<string, unknown>[],
+      ...(options?.isEncrypted !== undefined
+        ? { is_encrypted: options.isEncrypted }
+        : {}),
+    } as unknown as Record<string, unknown>,
+    options?.betaCode ? { headers: { [ROOM_CODE_HEADER]: options.betaCode } } : undefined,
+  );
 }

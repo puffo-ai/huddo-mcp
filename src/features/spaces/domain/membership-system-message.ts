@@ -1,4 +1,4 @@
-import type { MessageWrite } from "../../messages/domain/message";
+import type { MessageWrite, StoredMessage } from "../../messages/domain/message";
 import { REDEEM_INVITE_CAPABILITY_KIND } from "../../invitations/domain/capability";
 
 export const MEMBERSHIP_SYSTEM_CONTENT_TYPE = "system/membership";
@@ -9,7 +9,6 @@ export interface MembershipSystemContent {
   action: MembershipAction;
   actor_slug: string;
   kicker_slug?: string;
-  inviter_slug?: string;
   target_slug?: string;
 }
 
@@ -48,9 +47,6 @@ export function parseMembershipSystemContent(
     if (typeof c.kicker_slug === "string" && c.kicker_slug.length > 0) {
       out.kicker_slug = c.kicker_slug;
     }
-    if (typeof c.inviter_slug === "string" && c.inviter_slug.length > 0) {
-      out.inviter_slug = c.inviter_slug;
-    }
     return out;
   }
   return null;
@@ -62,7 +58,6 @@ export interface SynthesizeArgs {
   action: MembershipAction;
   actorSlug: string;
   kickerSlug?: string;
-  inviterSlug?: string;
   targetSlug?: string;
   now: number;
   eventId?: string;
@@ -77,9 +72,6 @@ export function buildMembershipSystemMessage(
   };
   if (args.action === "removed" && args.kickerSlug) {
     content.kicker_slug = args.kickerSlug;
-  }
-  if (args.action === "joined" && args.inviterSlug) {
-    content.inviter_slug = args.inviterSlug;
   }
   if (args.action === "transferred" && args.targetSlug) {
     content.target_slug = args.targetSlug;
@@ -108,7 +100,6 @@ export type SynthesisPlan = {
   action: MembershipAction;
   actorSlug: string;
   kickerSlug?: string;
-  inviterSlug?: string;
   targetSlug?: string;
   now: number;
   eventId?: string;
@@ -116,13 +107,6 @@ export type SynthesisPlan = {
     | { kind: "channel"; channelId: string; spaceId: string | null }
     | { kind: "space"; spaceId: string };
 };
-
-function extractInviterSlug(payload: Record<string, unknown>): string | undefined {
-  const orig = payload.original_invite;
-  if (!orig || typeof orig !== "object") return undefined;
-  const slug = (orig as { signer_slug?: unknown }).signer_slug;
-  return typeof slug === "string" && slug.length > 0 ? slug : undefined;
-}
 
 export function chooseMembershipSynthesis(
   evt: { kind?: string; signer_slug?: string; event_id?: string },
@@ -152,18 +136,16 @@ export function chooseMembershipSynthesis(
       },
     };
   }
-  if (evt.kind === "accept_channel_invite" || evt.kind === "leave_channel") {
+  if (evt.kind === "leave_channel") {
     const actorSlug = evt.signer_slug ?? "";
     if (!actorSlug) return null;
     const channelId = payload.channel_id as string | undefined;
     if (!channelId) return null;
     const spaceId = (payload.space_id as string | undefined) ?? null;
-    const isAccept = evt.kind === "accept_channel_invite";
     return {
       ...common,
-      action: isAccept ? "joined" : "left",
+      action: "left",
       actorSlug,
-      inviterSlug: isAccept ? extractInviterSlug(payload) : undefined,
       target: { kind: "channel", channelId, spaceId },
     };
   }
@@ -181,17 +163,15 @@ export function chooseMembershipSynthesis(
       target: { kind: "channel", channelId, spaceId },
     };
   }
-  if (evt.kind === "accept_space_invite" || evt.kind === "leave_space") {
+  if (evt.kind === "leave_space") {
     const actorSlug = evt.signer_slug ?? "";
     if (!actorSlug) return null;
     const spaceId = payload.space_id as string | undefined;
     if (!spaceId) return null;
-    const isAccept = evt.kind === "accept_space_invite";
     return {
       ...common,
-      action: isAccept ? "joined" : "left",
+      action: "left",
       actorSlug,
-      inviterSlug: isAccept ? extractInviterSlug(payload) : undefined,
       target: { kind: "space", spaceId },
     };
   }
@@ -225,7 +205,60 @@ export function chooseMembershipSynthesis(
   return null;
 }
 
-const EVENT_TIME_FIELDS = ["redeemed_at", "accepted_at", "issued_at", "effective_from"] as const;
+export type SpaceEventRecord = Readonly<{
+  event_id: string;
+  kind: string;
+  signer_slug: string;
+  payload: Record<string, unknown>;
+  server_received_at_ms: number;
+}>;
+
+export function membershipMessagesFromEvents(
+  events: readonly SpaceEventRecord[],
+  target: { spaceId: string; channelId: string; main: boolean },
+): StoredMessage[] {
+  const byId = new Map<string, StoredMessage>();
+  for (const event of events) {
+    const at = event.server_received_at_ms;
+    const redemptionId = event.kind === REDEEM_INVITE_CAPABILITY_KIND ? event.payload.redemption_id : undefined;
+    const plan = chooseMembershipSynthesis(
+      typeof redemptionId === "string" && redemptionId ? { ...event, event_id: redemptionId } : event,
+      event.payload,
+      "",
+      at,
+    );
+    if (!plan) continue;
+    if (plan.target.kind === "space" ? plan.target.spaceId !== target.spaceId || !target.main : plan.target.channelId !== target.channelId) continue;
+    const row = buildMembershipSystemMessage({
+      channelId: target.channelId,
+      spaceId: target.spaceId,
+      action: plan.action,
+      actorSlug: plan.actorSlug,
+      kickerSlug: plan.kickerSlug,
+      targetSlug: plan.targetSlug,
+      now: at,
+      eventId: plan.eventId,
+    });
+    if (byId.has(row.envelope_id)) continue;
+    byId.set(row.envelope_id, {
+      ...row,
+      envelope_kind: "channel",
+      channel_id: target.channelId,
+      space_id: target.spaceId,
+      recipient_slug: null,
+      content_type: MEMBERSHIP_SYSTEM_CONTENT_TYPE,
+      sent_at: at,
+      received_at: at,
+      thread_root_id: null,
+      reply_to_id: null,
+      is_visible_to_human: true,
+      verify_status: "verified",
+    });
+  }
+  return [...byId.values()];
+}
+
+const EVENT_TIME_FIELDS = ["redeemed_at", "issued_at", "effective_from"] as const;
 
 export function membershipEventTime(payload: Record<string, unknown>, now: number): number {
   for (const field of EVENT_TIME_FIELDS) {

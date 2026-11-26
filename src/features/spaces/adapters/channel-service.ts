@@ -66,9 +66,9 @@ export async function fetchChannelMembers(
 export async function fetchSpaceMembers(
   http: PuffoHttpClient,
   spaceId: string,
-): Promise<{ slug: string; role: string; identity_type?: string }[]> {
+): Promise<{ slug: string; role: string; identity_type?: string; joined_at?: number }[]> {
   const resp = await http.get<{
-    members: { slug: string; role: string; identity_type?: string }[];
+    members: { slug: string; role: string; identity_type?: string; joined_at?: number }[];
   }>(`/spaces/${spaceId}/members`);
   return resp.members;
 }

@@ -1,5 +1,5 @@
 import type { PuffoHttpClient } from "../../../http/client";
-import type { CryptoOps } from "../../../http/types";
+import { HttpError, type CryptoOps } from "../../../http/types";
 import {
   generateEventNonce,
   generateEventUuid,
@@ -100,6 +100,15 @@ export async function lookupInviteLink(
   shortCode: string,
 ): Promise<InvitationLinkPreview> {
   return http.getUnsigned<InvitationLinkPreview>(linkPath(shortCode));
+}
+
+/**
+ * Whether a failed lookup means the link itself is no good: the server answered 4xx (unknown, expired or revoked).
+ * Anything else said nothing about the link, so it may work on a retry: offline, a 5xx, and the two 4xx answers about
+ * the request rather than the link, 408 (timed out) and 429 (too many requests).
+ */
+export function isDeadInviteLink(err: unknown): boolean {
+  return err instanceof HttpError && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429;
 }
 
 export async function loadInviteShowcaseMessages(

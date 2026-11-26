@@ -23,6 +23,7 @@ export interface StoredMessage {
   reply_to_id: string | null;
   is_visible_to_human: boolean;
   verify_status: VerifyStatus;
+  send_state?: "pending" | "failed";
 }
 
 export interface MessageWrite {
@@ -59,28 +60,13 @@ export interface RootReadCursorSnapshot {
   seq: number;
 }
 
-export interface ThreadReadCursorSnapshot {
-  threadRootId: string;
-  seq: number;
-  envelopeId?: string;
-}
-
 export interface ReadCursorSnapshotResult {
   readChannelIds: string[];
   readDmPeerSlugs: string[];
-  appliedThreadCount: number;
-}
-
-export interface FollowedThreadSummary {
-  rootMessage: StoredMessage;
-  latestReply: StoredMessage | null;
-  lastActivityAt: number;
-  unreadCount: number;
 }
 
 export interface MentionedMessage {
   message: StoredMessage;
-  threadRoot: StoredMessage | null;
 }
 
 export interface SenderActivity {

@@ -7,6 +7,8 @@ export class DeadlineReached extends Error {
 export class NetworkError extends Error {}
 
 export class Deadline {
+  private reached = false;
+
   constructor(readonly at: number, readonly signal?: AbortSignal) {}
 
   remaining(): number {
@@ -14,7 +16,7 @@ export class Deadline {
   }
 
   expired(): boolean {
-    return this.remaining() === 0 || !!this.signal?.aborted;
+    return this.reached || this.remaining() === 0 || !!this.signal?.aborted;
   }
 
   race<T>(work: Promise<T>): Promise<T> {
@@ -26,7 +28,10 @@ export class Deadline {
         this.signal?.removeEventListener("abort", stop);
         reject(new DeadlineReached());
       };
-      const timer = setTimeout(stop, this.remaining());
+      const timer = setTimeout(() => {
+        this.reached = true;
+        stop();
+      }, this.remaining());
       this.signal?.addEventListener("abort", stop);
       work.then(
         (value) => {
@@ -52,6 +57,15 @@ export class Deadline {
   }
 
   sleep(ms: number): Promise<void> {
-    return this.race(new Promise<void>((resolve) => setTimeout(resolve, Math.min(ms, this.remaining())))).catch(() => undefined);
+    const left = this.remaining();
+    // A sleep cut short by the deadline ends at it. Its timer can beat the race's own one by a moment when the loop's
+    // clock lags Date.now() under load, so it marks the deadline reached instead of leaving one more check to run.
+    const toDeadline = ms >= left;
+    return this.race(new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, Math.min(ms, left))))).then(
+      () => {
+        if (toDeadline) this.reached = true;
+      },
+      () => undefined,
+    );
   }
 }

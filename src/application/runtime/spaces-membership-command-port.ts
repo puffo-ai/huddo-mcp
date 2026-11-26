@@ -10,7 +10,7 @@ export interface SpacesMembershipCommandPort {
     http: PuffoHttpClient,
     spaceId: string,
     events: SignedSpaceEvent[],
-    options?: { isEncrypted?: boolean },
+    options?: { isEncrypted?: boolean; betaCode?: string },
   ): Promise<PostSpaceEventsResponse>;
   dispose(): void;
 }
@@ -33,7 +33,7 @@ export async function submitSpacesMembershipEvents(
   http: PuffoHttpClient,
   spaceId: string,
   events: SignedSpaceEvent[],
-  options?: { isEncrypted?: boolean },
+  options?: { isEncrypted?: boolean; betaCode?: string },
 ): Promise<PostSpaceEventsResponse> {
   if (!installed && import.meta.env.MODE === "test") {
     installed = createTypeScriptSpacesMembershipCommandPort();

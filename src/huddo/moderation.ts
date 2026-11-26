@@ -79,7 +79,7 @@ export function sendLimitError(err: unknown): SendLimitError | null {
     return { kind: "slow_mode", retryAfterMs, message: `Slow mode is on: you can send again in ${Math.max(1, Math.ceil(retryAfterMs / 1000))}s.` };
   }
   if (body.error === "MESSAGE_TOO_LONG") {
-    return { kind: "too_long", message: body.message ?? "Message is too long for this huddo." };
+    return { kind: "too_long", message: body.message ?? "Message is too long for this room." };
   }
   return null;
 }

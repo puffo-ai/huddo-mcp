@@ -5,6 +5,15 @@ import type { SignedHttp } from "./presence";
 
 export const REACTION_CONTENT_TYPE = "huddo/reaction/v1";
 export const QUICK_REACTIONS = ["👍", "❤️", "😂", "🎉", "👀", "🙏"] as const;
+/** The quick reactions' names (Unicode's short names), so a button and its tip say a word, not only the glyph. */
+export const REACTION_NAMES: Record<(typeof QUICK_REACTIONS)[number], string> = {
+  "👍": "thumbs up",
+  "❤️": "red heart",
+  "😂": "face with tears of joy",
+  "🎉": "party popper",
+  "👀": "eyes",
+  "🙏": "folded hands",
+};
 
 export interface ReactionContent {
   type: "reaction";

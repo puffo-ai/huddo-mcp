@@ -119,7 +119,8 @@ async function readCapped(response: Response, limit: number): Promise<Uint8Array
 
 export type HostGuard = (url: URL) => Promise<boolean>;
 
-async function follow(target: URL, accept: string, fetchImpl: typeof fetch, guard?: HostGuard): Promise<{ response: Response; url: URL } | null> {
+/** Follows redirects with the guard on every hop. A final non-2xx answer is null unless `keepErrors` asks for it. */
+export async function follow(target: URL, accept: string, fetchImpl: typeof fetch, guard?: HostGuard, keepErrors = false): Promise<{ response: Response; url: URL } | null> {
   let url = target;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     if (guard && !(await guard(url))) return null;
@@ -135,7 +136,7 @@ async function follow(target: URL, accept: string, fetchImpl: typeof fetch, guar
       url = next;
       continue;
     }
-    if (!response.ok) {
+    if (!response.ok && !keepErrors) {
       await response.body?.cancel();
       return null;
     }
@@ -164,6 +165,8 @@ export interface UnfurlAnswer {
   status: number;
   body: string | Uint8Array;
   contentType: string;
+  /** Edge-cache lifetime for a 200; defaults to a day. 0 keeps it out of every cache. */
+  maxAge?: number;
 }
 
 const json = (status: number, body: string): UnfurlAnswer => ({ status, body, contentType: "application/json" });
@@ -233,14 +236,15 @@ export async function serveUnfurl(request: Request, answer: (url: string | null)
   const hit = await cache.match(key);
   if (hit) return hit;
   const result = await answer(new URL(request.url).searchParams.get("url"));
+  const kept = result.status === 200 && result.maxAge !== 0;
   const response = new Response(result.body as BodyInit, {
     status: result.status,
     headers: {
       ...SAFE_HEADERS,
       "content-type": result.contentType,
-      "cache-control": result.status === 200 ? `public, max-age=${CACHE_SECONDS}` : "no-store",
+      "cache-control": kept ? `public, max-age=${result.maxAge ?? CACHE_SECONDS}` : "no-store",
     },
   });
-  if (result.status === 200) await cache.put(key, response.clone());
+  if (kept) await cache.put(key, response.clone());
   return response;
 }

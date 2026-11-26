@@ -1,6 +1,4 @@
-import type { StoredIdentity, BrowserKeyStore } from "./keystore";
-import type { CryptoOps } from "../../http/types";
-import { registerNewDevice } from "../device/register-device";
+import type { StoredIdentity } from "./keystore";
 
 const PBKDF2_ITERATIONS = 600_000;
 const SALT_BYTES = 32;
@@ -47,18 +45,6 @@ export async function exportKeyBackup(
   };
 
   return new Blob([JSON.stringify(backup)], { type: "application/json" });
-}
-
-export async function importKeyBackup(
-  file: Blob,
-  passphrase: string,
-  keyStore: BrowserKeyStore,
-  crypto?: CryptoOps,
-): Promise<StoredIdentity> {
-  const restored = await decryptKeyBackup(file, passphrase);
-  const identity = crypto ? await registerNewDevice(restored, crypto) : restored;
-  await keyStore.saveIdentity(identity);
-  return identity;
 }
 
 const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
@@ -122,6 +108,42 @@ export async function decryptKeyBackup(file: Blob, passphrase: string): Promise<
     return identityFromPayload(JSON.parse(new TextDecoder().decode(plaintext)));
   } catch {
     throw new BackupImportError("Wrong passphrase or corrupted backup");
+  }
+}
+
+const ESCROW_VERSION = 1;
+
+export interface SealedEscrow {
+  ciphertext: string;
+  key: string;
+}
+
+/** The escrow core seals (`{v, iv, ct}` under a fresh AES-256-GCM key) for this identity. */
+export async function sealIdentityEscrow(identity: StoredIdentity): Promise<SealedEscrow> {
+  const raw = crypto.getRandomValues(new Uint8Array(32));
+  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
+  const key = await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt"]);
+  const plaintext = new TextEncoder().encode(JSON.stringify(identityPayload(identity)));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext));
+  return {
+    ciphertext: JSON.stringify({ v: ESCROW_VERSION, iv: arrayToBase64(iv), ct: arrayToBase64(ct) }),
+    key: arrayToBase64(raw),
+  };
+}
+
+export async function openIdentityEscrow(ciphertext: string, key: string): Promise<StoredIdentity> {
+  try {
+    const sealed = JSON.parse(ciphertext) as { v?: number; iv?: string; ct?: string };
+    if (sealed.v !== ESCROW_VERSION || typeof sealed.iv !== "string" || typeof sealed.ct !== "string") throw new Error();
+    const aes = await crypto.subtle.importKey("raw", base64ToArray(key) as BufferSource, "AES-GCM", false, ["decrypt"]);
+    const plaintext = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: base64ToArray(sealed.iv) as BufferSource },
+      aes,
+      base64ToArray(sealed.ct) as BufferSource,
+    );
+    return identityFromPayload(JSON.parse(new TextDecoder().decode(plaintext)));
+  } catch {
+    throw new BackupImportError("This backup could not be opened");
   }
 }
 

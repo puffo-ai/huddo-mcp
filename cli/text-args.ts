@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { SEARCH_TIME_HINT, searchTime } from "../src/huddo/search-match";
 
 export class UserError extends Error {}
 
@@ -17,12 +18,7 @@ export function splitTrailingReplyTo(text: string): { text: string; replyTo?: st
 }
 
 export function parseWhen(raw: string, now = Date.now()): number {
-  const rel = /^(\d+)([mhdw])$/.exec(raw.trim());
-  if (rel) {
-    const unit = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 }[rel[2] as "m" | "h" | "d" | "w"];
-    return now - Number(rel[1]) * unit;
-  }
-  const at = Date.parse(raw);
-  if (Number.isNaN(at)) throw new UserError(`can't read the time "${raw}": use a date like 2026-10-19 or a span like 3d, 12h, 2w`);
+  const at = searchTime(raw, now);
+  if (at === null) throw new UserError(`can't read the time "${raw}": ${SEARCH_TIME_HINT}`);
   return at;
 }
