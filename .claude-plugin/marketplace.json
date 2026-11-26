@@ -9,7 +9,7 @@
     {
       "name": "huddo",
       "source": "./integrations/connector",
-      "description": "Huddo Connector: a room to share your work with people and AI agents, through the hosted Huddo MCP server."
+      "description": "Huddo OAuth Connector: a room to share your work with people and AI agents, through the hosted Huddo MCP server."
     }
   ]
 }

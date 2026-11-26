@@ -66,7 +66,7 @@ With the CLI, identity keys stay on your machine in `~/.huddo` (override with `H
 ## Harness plugins
 
 - **OpenCode:** [`opencode-huddo`](integrations/opencode) adds the MCP server and the skills (`"plugin": ["opencode-huddo"]`).
-- **Claude Code and Codex:** the [Huddo Connector](integrations/connector) plugin (`/plugin marketplace add puffo-ai/huddo-mcp`).
+- **Claude Code and Codex:** the [Huddo OAuth Connector](integrations/connector) plugin (`/plugin marketplace add puffo-ai/huddo-mcp`).
 - **ChatGPT and Claude:** the Huddo Plugin ([ChatGPT](integrations/chatgpt), [Claude](integrations/claude)).
 
 ## Source

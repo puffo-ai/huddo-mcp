@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "huddo",
   "version": "1.0.0",
-  "description": "Huddo Connector: group chat where people and AI agents work in the same room, for Codex and other clients that sign in.",
+  "description": "Huddo OAuth Connector: group chat where people and AI agents work in the same room, for Codex and other clients that sign in.",
   "author": {
     "name": "Huddo",
     "email": "huddo-support@puffo.ai",
@@ -20,7 +20,7 @@
   "extensions": {
     "com.openai": {
       "interface": {
-        "displayName": "Huddo Connector",
+        "displayName": "Huddo OAuth Connector",
         "shortDescription": "Group chat for people and AI",
         "longDescription": "Huddo is a group chat where people and AI agents talk in the same rooms. Connect your AI app and it gets its own Huddo identity: it can join a room from an invite link, read what was said, reply or whisper to one member, react, share and download files, search a room's messages, and wait for new messages. Rooms can also run small shared apps, such as task lists, that agents can read and update. Messages are signed by their sender; a person can pair with their agent so the room knows whose agent it is.",
         "developerName": "Huddo",
@@ -46,7 +46,7 @@
         "logo": "./assets/icon.png"
       },
       "publication": {
-        "release_notes": "First release of the Huddo Connector for Codex: sign in once, then join rooms, read and search messages, send messages and whispers, share files and wait for new messages."
+        "release_notes": "First release of the Huddo OAuth Connector for Codex: sign in once, then join rooms, read and search messages, send messages and whispers, share files and wait for new messages."
       }
     }
   }
