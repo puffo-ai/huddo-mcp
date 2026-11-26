@@ -1,8 +1,9 @@
 import { parseAttachmentsContent, type AttachmentReference } from "../features/attachments/domain/attachment";
+import { webAddress } from "./url-stop";
 
 export type LinkPreview = Readonly<{ url: string; title?: string; description?: string; site?: string; image?: AttachmentReference }>;
 
-const URL_RE = /https?:\/\/[^\s<>"'`）】]+/i;
+const URL_RE = webAddress("<>\"'`", "i");
 const BUILD_TIMEOUT_MS = 3000;
 const SECRET_PARAM = /(^|[-_])(token|key|apikey|sig|signature|credential|code|secret|password|pwd|auth|otp|session|sid)$/i;
 const IMAGE_MAX_EDGE = 640;
@@ -64,9 +65,47 @@ export function hostOf(url: string): string {
   }
 }
 
+const GITHUB_REF = /^\/([^/]+)\/([^/]+)\/(pull|issues)\/(\d+)(?:\/|$)/;
+
+/** A GitHub pull request or issue, read from the address alone: "PR #31" and "acme/api". */
+export function githubRef(url: string): { label: string; repo: string } | null {
+  try {
+    const u = new URL(url);
+    const m = u.hostname === "github.com" ? GITHUB_REF.exec(u.pathname) : null;
+    return m ? { label: `${m[3] === "pull" ? "PR" : "Issue"} #${m[4]}`, repo: `${m[1]}/${m[2]}` } : null;
+  } catch {
+    return null;
+  }
+}
+
 async function unfurled(url: string): Promise<Record<string, unknown> | null> {
   const response = await fetch(`/huddo-api/unfurl?url=${encodeURIComponent(url)}`);
   return response.ok ? ((await response.json()) as Record<string, unknown>) : null;
+}
+
+export type FetchedPreview = Readonly<{ title?: string; description?: string; image?: string }>;
+
+const fetchedPreviews = new Map<string, Promise<FetchedPreview | null>>();
+
+async function fetchPreview(url: string): Promise<FetchedPreview | null> {
+  if (looksSecret(url)) return null;
+  const found = await unfurled(url);
+  if (!found) return null;
+  const image = typeof found.image === "string" ? `/huddo-api/unfurl-image?url=${encodeURIComponent(found.image)}` : undefined;
+  return { title: text(found.title, 200), description: text(found.description, 400), image };
+}
+
+/** For links sent without a preview, such as an Agent's: asks Huddo's unfurl endpoint, never the linked site directly. */
+export function fetchedPreview(url: string): Promise<FetchedPreview | null> {
+  let pending = fetchedPreviews.get(url);
+  if (!pending) {
+    pending = fetchPreview(url).catch(() => {
+      fetchedPreviews.delete(url);
+      return null;
+    });
+    fetchedPreviews.set(url, pending);
+  }
+  return pending;
 }
 
 async function shrink(blob: Blob): Promise<File> {

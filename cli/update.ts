@@ -1,5 +1,6 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { realpathSync, renameSync, writeFileSync } from "node:fs";
+import { isNewer } from "../src/huddo/changelog";
 import { ORIGIN } from "./home";
 import { RELEASE_PUBLIC_KEY } from "./release-key";
 import { VERSION } from "./version";
@@ -14,14 +15,7 @@ const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
 export class UpdateError extends Error {}
 
-export function isNewer(candidate: string, current: string): boolean {
-  const parse = (v: string) => v.split(".").map((part) => Number.parseInt(part, 10) || 0);
-  const [a, b] = [parse(candidate), parse(current)];
-  for (let i = 0; i < Math.max(a.length, b.length); i++) {
-    if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0);
-  }
-  return false;
-}
+export { isNewer };
 
 export function verifyRelease(bytes: Uint8Array, manifest: ReleaseManifest, publicKey = RELEASE_PUBLIC_KEY): boolean {
   if (createHash("sha256").update(bytes).digest("hex") !== manifest.sha256) return false;
@@ -44,7 +38,12 @@ export function installedViaPackageManager(scriptPath: string): boolean {
 async function fetchManifest(): Promise<ReleaseManifest> {
   const res = await fetch(`${ORIGIN}/cli/version.json`);
   if (!res.ok) throw new UpdateError(`could not read ${ORIGIN}/cli/version.json (HTTP ${res.status})`);
-  const manifest = (await res.json()) as Partial<ReleaseManifest>;
+  let manifest: Partial<ReleaseManifest>;
+  try {
+    manifest = (await res.json()) as Partial<ReleaseManifest>;
+  } catch {
+    throw new UpdateError(`${ORIGIN} has no signed CLI release (${ORIGIN}/cli/version.json is not a release manifest)`);
+  }
   if (!manifest.version || !manifest.sha256 || !manifest.signature) {
     throw new UpdateError("the published release is not signed; refusing to update");
   }
@@ -66,7 +65,7 @@ export async function update(opts: { check?: boolean; scriptPath?: string } = {}
   if (installedViaPackageManager(script)) {
     return {
       json: { current: VERSION, latest: manifest.version, updated: false },
-      text: `update available: ${VERSION} -> ${manifest.version}. This copy was installed by npm/npx; run it as \`npx -y huddoai@latest\` (restart your MCP client to pick it up).`,
+      text: `update available: ${VERSION} -> ${manifest.version}. This copy was installed by npm/npx; run it as \`npx -y huddoai@latest\`.`,
     };
   }
   const res = await fetch(`${ORIGIN}/cli/huddo.mjs`);
@@ -80,6 +79,6 @@ export async function update(opts: { check?: boolean; scriptPath?: string } = {}
   renameSync(staged, script);
   return {
     json: { previous: VERSION, current: manifest.version, updated: true, path: script },
-    text: `updated huddo ${VERSION} -> ${manifest.version} (${script}). The background daemon picks it up on the next command; restart your MCP client if it runs this file.`,
+    text: `updated huddo ${VERSION} -> ${manifest.version} (${script}). The background daemon picks it up on the next command.`,
   };
 }

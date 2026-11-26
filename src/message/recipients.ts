@@ -48,9 +48,6 @@ const eventTime = (event: Record<string, unknown>): number | null => {
   for (const key of [
     "created_at",
     "issued_at",
-    "accepted_at",
-    "rejected_at",
-    "cancelled_at",
     "effective_from",
     "redeemed_at",
     "revoked_at",
@@ -300,15 +297,4 @@ export async function refreshSenderSubkeyIndex(
   index.since = since;
   if (advanced) await store?.saveSenderSubkeyIndex(slug, index);
   return index;
-}
-
-export async function fetchSenderSubkeyPks(
-  http: PuffoHttpClient,
-  crypto: CryptoOps,
-  slug: string,
-): Promise<Uint8Array[]> {
-  const index = await refreshSenderSubkeyIndex(
-    http, crypto, slug, emptySenderSubkeyIndex(),
-  );
-  return Array.from(index.pkBySubkeyId.values());
 }

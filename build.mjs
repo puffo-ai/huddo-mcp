@@ -30,6 +30,8 @@ await build({
   banner: { js: "#!/usr/bin/env node" },
   define: {
     "import.meta.env": JSON.stringify({ MODE: "production", PROD: true, DEV: false }),
+    __APP_VERSION__: JSON.stringify("cli"),
+    __APP_BUILT_AT__: "0",
   },
   plugins: [wasmBytes],
 });

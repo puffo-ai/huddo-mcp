@@ -1,12 +1,49 @@
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 
 export const SERVER_URL = (process.env.HUDDO_SERVER_URL || "https://api.huddo.ai").replace(/\/+$/, "");
 export const ORIGIN = (process.env.HUDDO_ORIGIN || "https://huddo.ai").replace(/\/+$/, "");
 
 export function homeDir(): string {
   return process.env.HUDDO_HOME || join(homedir(), ".huddo");
+}
+
+// macOS allows 104 bytes for a socket path and Linux 108, both with the closing NUL; a longer path is cut short.
+const MAX_SOCKET_PATH_BYTES = 103;
+
+const fitsSocketPath = (path: string) => Buffer.byteLength(path) <= MAX_SOCKET_PATH_BYTES;
+
+/**
+ * Where this home's `name` process listens: a named pipe on Windows, else `HUDDO_HOME/<name>.sock`. A home too
+ * deep for that path gets `<hash of the home>-<name>.sock` in a directory only this user can open, so two homes
+ * never share a socket and another user can't take its place.
+ */
+export function localEndpoint(name: "core" | "daemon", platform: NodeJS.Platform = process.platform): string {
+  const home = resolve(homeDir());
+  const hash = createHash("sha256").update(platform === "win32" ? home.toLowerCase() : home).digest("hex").slice(0, 16);
+  if (platform === "win32") return `\\\\.\\pipe\\huddo-${name === "core" ? "core-" : ""}${hash}`;
+  const inHome = join(home, `${name}.sock`);
+  return fitsSocketPath(inHome) ? inHome : join(privateSocketDir(), `${hash}-${name}.sock`);
+}
+
+/**
+ * $XDG_RUNTIME_DIR/huddo, else huddo-<uid> in the temp directory or /tmp, whichever leaves room for a socket name.
+ * It must be a real directory of this user that no one else can open; anything else is an error, never used.
+ */
+export function privateSocketDir(): string {
+  const uid = process.getuid!();
+  const runtime = process.env.XDG_RUNTIME_DIR;
+  const dir = [runtime ? join(runtime, "huddo") : null, join(tmpdir(), `huddo-${uid}`), `/tmp/huddo-${uid}`].find(
+    (d): d is string => d !== null && fitsSocketPath(join(d, `${"0".repeat(16)}-daemon.sock`)),
+  )!;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(dir);
+  if (!stat.isDirectory() || stat.uid !== uid || (stat.mode & 0o077) !== 0) {
+    throw new Error(`${dir} is not a private directory of this user, so the local socket can't go there; use a shorter HUDDO_HOME`);
+  }
+  return dir;
 }
 
 function ensureDir(dir: string): void {
@@ -152,6 +189,8 @@ export function listIdentitySlugs(): string[] {
 interface HomeConfig {
   active?: string;
   names?: Record<string, string>;
+  /** The room invite code: every identity in this home sends it when it creates a room. */
+  inviteCode?: string;
 }
 
 const configPath = () => join(homeDir(), "config.json");
@@ -178,7 +217,9 @@ export interface Room {
 export interface IdentityState {
   room?: Room;
   rooms?: Record<string, Room>;
+  /** Read positions from before the server kept them: handed to the server once, then removed. */
   cursors?: Record<string, number>;
+  baselines?: Record<string, number>;
   systemCursors?: Record<string, { events?: string; pairs?: number }>;
   pairing?: { spaceId: string; room: string; code: string; startedAt: number };
   operator?: string;

@@ -1,3 +1,5 @@
+import { readStored, removeStored, writeStored } from "./stored";
+
 export const HUDDO_SERVER_URL: string =
   import.meta.env.VITE_HUDDO_SERVER_URL || "https://api.huddo.ai";
 
@@ -57,34 +59,30 @@ export interface HuddoGroupRef {
 }
 
 export function rememberLastGroup(ref: HuddoGroupRef): void {
-  try {
-    localStorage.setItem(LAST_GROUP_KEY, JSON.stringify(ref));
-  } catch {}
+  writeStored(LAST_GROUP_KEY, JSON.stringify(ref));
 }
 
 export function readLastGroup(slug: string | null): HuddoGroupRef | null {
   if (!slug) return null;
-  try {
-    const raw = localStorage.getItem(LAST_GROUP_KEY);
-    const parsed = raw ? (JSON.parse(raw) as HuddoGroupRef) : null;
-    return parsed && parsed.slug === slug && parsed.spaceId && parsed.channelId ? parsed : null;
-  } catch {
-    return null;
-  }
+  return readStored(LAST_GROUP_KEY, {
+    parse: (raw) => {
+      const parsed = raw ? (JSON.parse(raw) as HuddoGroupRef) : null;
+      return parsed && parsed.slug === slug && parsed.spaceId && parsed.channelId ? parsed : null;
+    },
+    fallback: null,
+  });
 }
 
 const shareLinkKey = (spaceId: string) => `huddo.share-link.v1:${spaceId}`;
 
 export function rememberShareLink(spaceId: string, url: string): void {
-  try {
-    localStorage.setItem(shareLinkKey(spaceId), url);
-  } catch {}
+  writeStored(shareLinkKey(spaceId), url);
+}
+
+export function forgetShareLink(spaceId: string): void {
+  removeStored(shareLinkKey(spaceId));
 }
 
 export function readShareLink(spaceId: string): string | null {
-  try {
-    return localStorage.getItem(shareLinkKey(spaceId));
-  } catch {
-    return null;
-  }
+  return readStored(shareLinkKey(spaceId), { parse: (raw) => raw, fallback: null });
 }

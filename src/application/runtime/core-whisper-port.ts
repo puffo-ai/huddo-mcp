@@ -17,9 +17,16 @@ export type CoreWhisperKeys = Readonly<{
 }>;
 
 let installed: CoreWhisperKeys | null = null;
+const listeners = new Set<() => void>();
 
 export function installCoreWhisperKeys(port: CoreWhisperKeys | null): void {
   installed = port;
+  for (const listener of [...listeners]) listener();
+}
+
+export function subscribeCoreWhisperKeys(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
 }
 
 export function coreWhisperKeys(): CoreWhisperKeys | null {

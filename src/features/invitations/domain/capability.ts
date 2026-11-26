@@ -77,18 +77,28 @@ export interface InvitationLinkPreview {
   space_archived?: boolean;
   issuer_slug: string;
   issuer_display_name?: string | null;
+  owner_slug?: string | null;
+  owner_display_name?: string | null;
+  owner_has_avatar?: boolean;
+  welcome_message?: string | null;
   scope: InviteCapabilityScope;
   channel_names?: Record<string, string>;
   showcase_channels?: InvitationShowcaseChannel[];
   member_count?: number | null;
   agent_count?: number | null;
   member_avatar_count?: number | null;
+  member_faces?: InvitationMemberFace[] | null;
   max_uses: number | null;
   uses: number;
   expires_at: number;
   create_event: SignedSpaceEvent;
   server_seq: number;
   server_received_at: number;
+}
+
+export interface InvitationMemberFace {
+  initials: string;
+  avatar_index: number | null;
 }
 
 export interface InvitationShowcaseChannel {

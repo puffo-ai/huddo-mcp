@@ -30,25 +30,9 @@ export function findAppLinks(text: string): AppLinkMatch[] {
   return out;
 }
 
-export const MAX_PANES = 2;
-
-export function openInPanes(panes: string[], appId: string): string[] {
-  if (panes.includes(appId)) return panes;
-  return [appId, ...panes.slice(1)].slice(0, MAX_PANES);
-}
-
-export function splitPanes(panes: string[], appId: string): string[] {
-  if (panes.length === 0 || panes.includes(appId)) return panes;
-  return [panes[0], appId];
-}
-
-export function closePane(panes: string[], appId: string): string[] {
-  return panes.filter((p) => p !== appId);
-}
-
 export function keepKnownPanes(panes: unknown, known: (appId: string) => boolean): string[] {
   if (!Array.isArray(panes)) return [];
   const out: string[] = [];
-  for (const p of panes) if (typeof p === "string" && known(p) && !out.includes(p) && out.length < MAX_PANES) out.push(p);
+  for (const p of panes) if (typeof p === "string" && known(p) && !out.includes(p) && out.length < 1) out.push(p);
   return out;
 }

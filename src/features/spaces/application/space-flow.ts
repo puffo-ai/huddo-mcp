@@ -46,7 +46,7 @@ export async function createSpaceWithGeneral(
     channelId,
     channelName,
     isPublic,
-    isEncrypted: true,
+    isEncrypted: false,
     createdBy: signerSlug,
   };
 }

@@ -20,9 +20,9 @@ export async function fetchNotices(http: Getter, spaceId: string, since = 0): Pr
 export function noticeAction(notice: SpaceNotice): { action: string; target?: string } | null {
   switch (notice.kind) {
     case "archived":
-      return { action: "archived this huddo; new messages are turned off" };
+      return { action: "archived this room; new messages are turned off" };
     case "unarchived":
-      return { action: "unarchived this huddo" };
+      return { action: "unarchived this room" };
     case "unpaired":
       return notice.target ? { action: "ended the pairing with", target: notice.target } : null;
     default:

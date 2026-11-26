@@ -32,14 +32,19 @@ export interface SystemCursor {
   notices?: number;
 }
 
-const SPACE_KINDS = new Set(["redeem_invite_capability", "accept_space_invite", "leave_space", "remove_from_space", "transfer_space_ownership"]);
+const SPACE_KINDS = new Set(["redeem_invite_capability", "leave_space", "remove_from_space", "transfer_space_ownership"]);
+const CHANNEL_KINDS = new Set(["add_to_channel", "leave_channel", "remove_from_channel"]);
 const MAX_PAGES = 50;
 
-export function membershipRow(evt: SpaceEvent): Row | null {
-  if (!SPACE_KINDS.has(evt.kind)) return null;
-  const plan = chooseMembershipSynthesis(evt, evt.payload ?? {}, "", Date.now());
+export function membershipRow(evt: SpaceEvent, channelId?: string): Row | null {
+  const payload = evt.payload ?? {};
+  if (CHANNEL_KINDS.has(evt.kind)) {
+    if (!channelId || payload.channel_id !== channelId) return null;
+    if (evt.kind === "add_to_channel" && typeof payload.source_redemption_id === "string") return null;
+  } else if (!SPACE_KINDS.has(evt.kind)) return null;
+  const plan = chooseMembershipSynthesis(evt, payload, "", Date.now());
   if (!plan) return null;
-  const action = plan.action === "removed" ? "was removed" : plan.action === "transferred" ? "handed the huddo to" : plan.action;
+  const action = plan.action === "removed" ? "was removed" : plan.action === "transferred" ? "handed the room to" : plan.action;
   return {
     seq: 0,
     id: `event:${evt.event_id}`,
@@ -96,7 +101,7 @@ async function fetchEvents(http: Getter, room: Room, since?: string) {
     const query = `limit=500${cursor ? `&since=${encodeURIComponent(cursor)}` : ""}`;
     const resp = await http.get<SpaceEventsPage>(`/spaces/${encodeURIComponent(room.spaceId)}/events?${query}`);
     for (const evt of resp.events ?? []) {
-      const row = membershipRow(evt);
+      const row = membershipRow(evt, room.channelId);
       if (row) rows.push(row);
     }
     cursor = resp.next_cursor ?? cursor;

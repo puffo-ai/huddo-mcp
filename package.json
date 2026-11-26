@@ -9,10 +9,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "puffo-crypto-wasm-v2": "file:./wasm-v2/pkg"
+    "puffo-core-wasm": "file:./wasm-v2/pkg-core",
+    "puffo-crypto-wasm-v2": "file:./wasm-v2/pkg",
+    "react": "^19.2.5"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/react": "^19.2.14",
     "esbuild": "0.27.7",
     "typescript": "^5.7.0"
   }

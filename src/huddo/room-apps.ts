@@ -1,6 +1,6 @@
 import { HttpError } from "../http/types";
 import type { SignedHttp } from "./presence";
-import { cachedRequest, forgetCachedRequest } from "./request-cache";
+import { cachedRequest, forgetCachedRequest, storeCachedRequest } from "./request-cache";
 
 export type PatchOp =
   | { op: "add"; path: string; value: unknown }
@@ -15,12 +15,12 @@ export interface AppMeta {
   schema_version: number;
   write_access: "members" | "owner";
   enabled: boolean;
-  banner: boolean;
   description: string;
   guide: string;
   revision: number;
   published_by: string;
   updated_at: number;
+  is_page?: boolean;
 }
 
 export interface AppStateSnapshot<S = Record<string, unknown>> {
@@ -37,7 +37,6 @@ export interface PublishInput {
   code: string;
   write_access?: "members" | "owner";
   enabled?: boolean;
-  banner?: boolean;
   description?: string;
   guide?: string;
   initial_state?: Record<string, unknown>;
@@ -46,7 +45,6 @@ export interface PublishInput {
 
 export interface SettingsInput {
   enabled?: boolean;
-  banner?: boolean;
   write_access?: "members" | "owner";
 }
 
@@ -78,6 +76,8 @@ export class AppError extends Error {
     readonly code: AppErrorCode,
     message: string,
     readonly status = 0,
+    /** The failure this wraps. An app gets the code and message; a screen reads this (huddo/error-text.ts). */
+    readonly source: unknown = null,
   ) {
     super(message);
     this.name = "AppError";
@@ -90,12 +90,12 @@ export function toAppError(err: unknown): AppError {
     try {
       const body = JSON.parse(err.body) as { error?: string; message?: string };
       const code = (APP_ERROR_CODES as readonly string[]).includes(body.error ?? "") ? (body.error as AppErrorCode) : "UNKNOWN";
-      return new AppError(code, body.message ?? err.message, err.status);
+      return new AppError(code, body.message ?? err.message, err.status, err);
     } catch {
-      return new AppError("UNKNOWN", err.message, err.status);
+      return new AppError("UNKNOWN", err.message, err.status, err);
     }
   }
-  return new AppError("UNKNOWN", err instanceof Error ? err.message : String(err));
+  return new AppError("UNKNOWN", err instanceof Error ? err.message : String(err), 0, err);
 }
 
 const enc = encodeURIComponent;
@@ -135,19 +135,68 @@ export function getAppCode(http: SignedHttp, spaceId: string, appId: string): Pr
   return call(() => http.get(`${base(spaceId)}/${enc(appId)}/code`));
 }
 
+export interface AppVersionMeta {
+  version: number;
+  name: string;
+  published_by: string;
+  published_at: number;
+  archived_at: number | null;
+}
+
+export interface AppVersion extends AppVersionMeta {
+  app_id: string;
+  schema_version: number;
+  code: string;
+  state: Record<string, unknown>;
+  revision: number;
+  current: number | null;
+  /** The Home assets this version was published with; servers before version assets leave it out. */
+  assets?: unknown;
+}
+
+/** Replaced versions this session has opened, as "space:app:version". They are read-only: no ops for them leave here. */
+const keptVersions = new Set<string>();
+
+/** Whether this version is a replaced one that this session opened, which takes no changes. */
+export const isKeptVersion = (spaceId: string, appId: string, version: number) => keptVersions.has(`${spaceId}:${appId}:${version}`);
+
+/**
+ * One kept version, fetched once per session. Its code goes into the code cache, so an app frame given this version's
+ * meta shows it without asking the server for the live code.
+ */
+export function getAppVersion(http: SignedHttp, spaceId: string, appId: string, version: number): Promise<AppVersion> {
+  return call(() =>
+    cachedRequest(
+      `app-version:${spaceId}:${appId}:${version}`,
+      async () => {
+        const out = await http.get<AppVersion>(`${base(spaceId)}/${enc(appId)}/versions/${version}`);
+        storeCachedRequest(codeKey(spaceId, { ...out, app_id: appId }), { code: out.code, version: out.version, schema_version: out.schema_version });
+        // The server also answers with the live version (archived_at null), which stays writable.
+        if (out.archived_at !== null) keptVersions.add(`${spaceId}:${appId}:${out.version}`);
+        return out;
+      },
+      Infinity,
+    ),
+  );
+}
+
+const codeKey = (spaceId: string, meta: Pick<AppMeta, "app_id" | "version" | "schema_version">) => `app-code:${spaceId}:${meta.app_id}:${meta.version}:${meta.schema_version}`;
+
 /** Code for this app version, fetched once per session; a response for another version is not kept. */
 export async function cachedAppCode(
   http: SignedHttp,
   spaceId: string,
   meta: Pick<AppMeta, "app_id" | "version" | "schema_version">,
 ): Promise<{ code: string; version: number; schema_version: number }> {
-  const key = `app-code:${spaceId}:${meta.app_id}:${meta.version}:${meta.schema_version}`;
+  const key = codeKey(spaceId, meta);
   const out = await cachedRequest(key, () => getAppCode(http, spaceId, meta.app_id), Infinity);
   if (out.version !== meta.version || out.schema_version !== meta.schema_version) forgetCachedRequest(key);
   return out;
 }
 
 export function submitOps(http: SignedHttp, spaceId: string, appId: string, input: OpsInput): Promise<{ revision: number; replayed: boolean }> {
+  if (input.app_version !== undefined && isKeptVersion(spaceId, appId, input.app_version))
+    return Promise.reject(new AppError("READ_ONLY", `this is version ${input.app_version}, kept read-only; open the latest version to make changes`));
   return call(() => http.post(`${base(spaceId)}/${enc(appId)}/ops`, input as unknown as Record<string, unknown>));
 }
 

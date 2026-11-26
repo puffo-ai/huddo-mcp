@@ -44,6 +44,7 @@ export async function createSpace(
   crypto: CryptoOps,
   signer: SignerSession,
   name: string,
+  betaCode?: string,
 ): Promise<CreatedSpace> {
   const spaceId = `sp_${generateEventUuid(crypto)}`;
   const joinedAt = Date.now();
@@ -63,7 +64,7 @@ export async function createSpace(
     signer.subkeySecretKey,
     http,
   );
-  const resp = await submitSpacesMembershipEvents(http, spaceId, [event]);
+  const resp = await submitSpacesMembershipEvents(http, spaceId, [event], betaCode ? { betaCode } : undefined);
 
   const generalEvent = resp.server_emitted_events?.find(
     (e) => e.kind === "create_channel",
@@ -85,7 +86,7 @@ export async function createChannel(
   signer: SignerSession,
   spaceId: string,
   name: string,
-  isEncrypted = true,
+  isEncrypted = false,
 ): Promise<CreatedChannel> {
   const channelId = `ch_${generateEventUuid(crypto)}`;
   const payload = {
@@ -107,266 +108,6 @@ export async function createChannel(
   );
   await submitSpacesMembershipEvents(http, spaceId, [event], { isEncrypted });
   return { channelId, spaceId, name, isEncrypted };
-}
-
-export async function inviteToSpace(
-  http: PuffoHttpClient,
-  crypto: CryptoOps,
-  signer: SignerSession,
-  spaceId: string,
-  inviteeSlug: string,
-): Promise<string> {
-  const payload = {
-    space_id: spaceId,
-    invitee_slug: inviteeSlug,
-    issued_at: Date.now(),
-    nonce: generateNonce(crypto),
-  };
-  const event = signEvent(
-    crypto,
-    "invite_to_space",
-    payload,
-    signer.slug,
-    signer.deviceId,
-    signer.subkeyId,
-    signer.subkeySecretKey,
-    http,
-  );
-  await submitSpacesMembershipEvents(http, spaceId, [event]);
-  return event.event_id;
-}
-
-export async function inviteToChannel(
-  http: PuffoHttpClient,
-  crypto: CryptoOps,
-  signer: SignerSession,
-  spaceId: string,
-  channelId: string,
-  inviteeSlug: string,
-): Promise<void> {
-  const payload = {
-    space_id: spaceId,
-    channel_id: channelId,
-    invitee_slug: inviteeSlug,
-    issued_at: Date.now(),
-    nonce: generateNonce(crypto),
-  };
-  const event = signEvent(
-    crypto,
-    "invite_to_channel",
-    payload,
-    signer.slug,
-    signer.deviceId,
-    signer.subkeyId,
-    signer.subkeySecretKey,
-    http,
-  );
-  await submitSpacesMembershipEvents(http, spaceId, [event]);
-}
-
-export async function inviteToSpaceAndChannel(
-  http: PuffoHttpClient,
-  crypto: CryptoOps,
-  signer: SignerSession,
-  spaceId: string,
-  channelId: string,
-  inviteeSlug: string,
-): Promise<void> {
-  const issuedAt = Date.now();
-  const spaceEvent = signEvent(
-    crypto,
-    "invite_to_space",
-    {
-      space_id: spaceId,
-      invitee_slug: inviteeSlug,
-      issued_at: issuedAt,
-      nonce: generateNonce(crypto),
-    },
-    signer.slug,
-    signer.deviceId,
-    signer.subkeyId,
-    signer.subkeySecretKey,
-    http,
-  );
-  const channelEvent = signEvent(
-    crypto,
-    "invite_to_channel",
-    {
-      space_id: spaceId,
-      channel_id: channelId,
-      invitee_slug: inviteeSlug,
-      issued_at: issuedAt,
-      nonce: generateNonce(crypto),
-    },
-    signer.slug,
-    signer.deviceId,
-    signer.subkeyId,
-    signer.subkeySecretKey,
-    http,
-  );
-  await submitSpacesMembershipEvents(http, spaceId, [spaceEvent, channelEvent]);
-}
-
-export async function acceptSpaceInvite(
-  http: PuffoHttpClient,
-  crypto: CryptoOps,
-  signer: SignerSession,
-  spaceId: string,
-  invitationEventId: string,
-): Promise<void> {
-  const payload = {
-    space_id: spaceId,
-    invitation_event_id: invitationEventId,
-    accepted_at: Date.now(),
-    nonce: generateNonce(crypto),
-  };
-  const event = signEvent(
-    crypto,
-    "accept_space_invite",
-    payload,
-    signer.slug,
-    signer.deviceId,
-    signer.subkeyId,
-    signer.subkeySecretKey,
-    http,
-  );
-  await submitSpacesMembershipEvents(http, spaceId, [event]);
-}
-
-export async function rejectSpaceInvite(
-  http: PuffoHttpClient,
-  crypto: CryptoOps,
-  signer: SignerSession,
-  spaceId: string,
-  invitationEventId: string,
-): Promise<void> {
-  const payload = {
-    space_id: spaceId,
-    invitation_event_id: invitationEventId,
-    rejected_at: Date.now(),
-    nonce: generateNonce(crypto),
-  };
-  const event = signEvent(
-    crypto,
-    "reject_space_invite",
-    payload,
-    signer.slug,
-    signer.deviceId,
-    signer.subkeyId,
-    signer.subkeySecretKey,
-    http,
-  );
-  await submitSpacesMembershipEvents(http, spaceId, [event]);
-}
-
-export async function cancelSpaceInvite(
-  http: PuffoHttpClient,
-  crypto: CryptoOps,
-  signer: SignerSession,
-  spaceId: string,
-  invitationEventId: string,
-): Promise<void> {
-  const payload = {
-    space_id: spaceId,
-    invitation_event_id: invitationEventId,
-    cancelled_at: Date.now(),
-    nonce: generateNonce(crypto),
-  };
-  const event = signEvent(
-    crypto,
-    "cancel_space_invite",
-    payload,
-    signer.slug,
-    signer.deviceId,
-    signer.subkeyId,
-    signer.subkeySecretKey,
-    http,
-  );
-  await submitSpacesMembershipEvents(http, spaceId, [event]);
-}
-
-export async function acceptChannelInvite(
-  http: PuffoHttpClient,
-  crypto: CryptoOps,
-  signer: SignerSession,
-  spaceId: string,
-  channelId: string,
-  invitationEventId: string,
-): Promise<void> {
-  const payload = {
-    space_id: spaceId,
-    channel_id: channelId,
-    invitation_event_id: invitationEventId,
-    accepted_at: Date.now(),
-    nonce: generateNonce(crypto),
-  };
-  const event = signEvent(
-    crypto,
-    "accept_channel_invite",
-    payload,
-    signer.slug,
-    signer.deviceId,
-    signer.subkeyId,
-    signer.subkeySecretKey,
-    http,
-  );
-  await submitSpacesMembershipEvents(http, spaceId, [event]);
-}
-
-export async function rejectChannelInvite(
-  http: PuffoHttpClient,
-  crypto: CryptoOps,
-  signer: SignerSession,
-  spaceId: string,
-  channelId: string,
-  invitationEventId: string,
-): Promise<void> {
-  const payload = {
-    space_id: spaceId,
-    channel_id: channelId,
-    invitation_event_id: invitationEventId,
-    rejected_at: Date.now(),
-    nonce: generateNonce(crypto),
-  };
-  const event = signEvent(
-    crypto,
-    "reject_channel_invite",
-    payload,
-    signer.slug,
-    signer.deviceId,
-    signer.subkeyId,
-    signer.subkeySecretKey,
-    http,
-  );
-  await submitSpacesMembershipEvents(http, spaceId, [event]);
-}
-
-export async function cancelChannelInvite(
-  http: PuffoHttpClient,
-  crypto: CryptoOps,
-  signer: SignerSession,
-  spaceId: string,
-  channelId: string,
-  invitationEventId: string,
-): Promise<void> {
-  const payload = {
-    space_id: spaceId,
-    channel_id: channelId,
-    invitation_event_id: invitationEventId,
-    cancelled_at: Date.now(),
-    nonce: generateNonce(crypto),
-  };
-  const event = signEvent(
-    crypto,
-    "cancel_channel_invite",
-    payload,
-    signer.slug,
-    signer.deviceId,
-    signer.subkeyId,
-    signer.subkeySecretKey,
-    http,
-  );
-  await submitSpacesMembershipEvents(http, spaceId, [event]);
 }
 
 export async function removeFromSpace(

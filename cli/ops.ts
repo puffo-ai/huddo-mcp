@@ -3,12 +3,17 @@ import { CHOICE_CLOSE_CONTENT_TYPE, closeContent, type OptionInput } from "../sr
 import { answerContent, richContent, type AnswerInput } from "./choice-params";
 export type { OptionInput } from "../src/huddo/choices";
 import { linkPreview } from "./link-preview";
+import { EARLIER_KEYS_WORK, OWNER_CONTEXT } from "../src/huddo/agent-guide";
+import { CLI_WORDS, enterRoom } from "./room-steps";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join as joinPath } from "node:path";
 import { HttpError } from "../src/http/types";
 import { signup } from "../src/identity/device/signup";
 import { decryptKeyBackup, exportKeyBackup } from "../src/identity/primitives/backup";
 import { registerNewDevice } from "../src/identity/device/register-device";
+import { BackupKeyError, keepKeyHintFor, backupStatus, createBackup, openBackup, removeBackup } from "./identity-backup";
+import { BackupImportError } from "../src/identity/primitives/backup";
 import {
   createChannel,
   createSpace,
@@ -19,7 +24,6 @@ import {
   removeFromSpace,
   setSpaceArchived,
   transferSpaceOwnership,
-  updateChannel,
   updateSpace,
 } from "../src/features/spaces/adapters";
 import type { Space } from "../src/features/spaces/domain";
@@ -33,7 +37,6 @@ import {
   INVITE_LINK_NEVER_EXPIRES_AT,
   type InvitationLinkPreview,
 } from "../src/features/invitations/domain/capability";
-import { buildPlaintextMessage } from "../src/message/core/encrypt";
 import { fetchRecipientDevices } from "../src/message/recipients";
 import { sealWhisper, WHISPER_CONTENT_TYPE } from "../src/huddo/whisper";
 import { REACTION_CONTENT_TYPE, fetchReactionSnapshot, reactionChips, reactionContent } from "../src/huddo/reactions";
@@ -50,13 +53,17 @@ import {
   getAppState,
   listApps,
   newRequestId,
-  publishApp,
   submitOps,
   toAppError,
-  updateAppSettings,
   type PatchOp,
 } from "../src/huddo/room-apps";
-import { postMessageEnvelope } from "../src/message";
+import { awaitCoreMessageSender } from "../src/application/runtime/core-message-sender-port";
+import { awaitCoreSpaceEvents } from "../src/application/runtime/core-space-port";
+import { coreSpaceCommands, leaveEvents, nonceFrom, removeEvent, transferEvent } from "../src/huddo/core-space-commands";
+import { attachCore } from "./core";
+import type { MessageQuote } from "../src/huddo/message-quotes";
+import { buildQuote, type QuoteInput } from "./quotes";
+import { QUOTE_NEEDS_TEXT } from "../src/huddo/quote-input";
 import {
   ATTACHMENT_CONTENT_TYPE,
   downloadAndDecryptAttachment,
@@ -69,6 +76,10 @@ import { fetchProfiles, updateProfile, uploadAvatar } from "../src/ui/services/p
 import { MAX_PROFILE_AVATAR_BYTES } from "../src/features/profiles/domain/human-profile";
 import { defaultGroupName, invitePath, mainChannelId } from "../src/huddo/config";
 import { displayNameError, hexFrom, randomAgentName, usernameFor } from "../src/huddo/names";
+import { newRoomNameError, roomRenameError } from "../src/huddo/room-name";
+import { normalizeRoomCode, ROOM_CODE_FORMAT, roomCodeRefusal } from "../src/huddo/room-code";
+import { roomTerms } from "../src/huddo/room-terms";
+export { NEW_ROOM_NAME_LIMIT, ROOM_RENAME_LIMIT } from "../src/huddo/room-name";
 import {
   ORIGIN,
   SERVER_URL,
@@ -81,17 +92,16 @@ import {
   type Room,
 } from "./home";
 import { accountFor, activeSlug, eventSigner, requireAccount, type Account, type Runtime } from "./runtime";
-import { listenerState, markListening, markStopped } from "./listener";
-import { fetchSystemRows, mergeByTime, sameCursor, type SystemCursor } from "./membership";
-import { fetchRows, fetchSince, formatRow, formatSize, isPeer, latestSeqOf, operatorTag, parentPreview, type Row } from "./rows";
-import { pageHint, skippedHint } from "./read-hints";
+import { listenerState } from "./listener";
+import { recentRows, formatBytes, formatRow, isPeer, operatorTag, parentPreview, type Row } from "./rows";
 import { locate } from "./message-links";
-import { PairingError, fetchPairs, memberType, pairingResult, randomPairingCode, startPairing, unpairAgent } from "../src/huddo/pairing";
-import { Deadline, DeadlineReached, NetworkError } from "./deadline";
-import { appendRows, cacheFile, cachedFile, extendBack, loadMeta, matches, mergeRevisions, storedRows, syncRoom, type SearchQuery } from "./store";
-import { commitLease, daemonEnabled, request as requestDaemon, waitViaDaemon } from "./ipc";
-import { readPresence, reportPresence } from "./presence";
-import { PRESENCE_HEARTBEAT_MS } from "../src/huddo/presence";
+import { PairingError, fetchPairs, pairingResult, randomPairingCode, startPairing, unpairAgent } from "../src/huddo/pairing";
+import { neutralizeTags, oneLine, safeLine } from "../src/huddo/projection";
+import { aboutLines, getAbout, getHome } from "../src/huddo/room-info-api";
+import { NetworkError } from "./deadline";
+import { cacheFile, cachedFile, extendBack, loadMeta, matches, mergeRevisions, storedRows, syncRoom, type SearchQuery } from "./store";
+import { daemonEnabled, request as requestDaemon } from "./ipc";
+import { deviceRejectionText } from "./device-check";
 import {
   BLOCKED_TEXT,
   MAX_CHARS_STEPS,
@@ -108,6 +118,8 @@ export { UserError, decodeNewlines, messageText, splitTrailingReplyTo, parseWhen
 import { UserError, splitTrailingReplyTo, parseWhen } from "./text-args";
 
 export { NetworkError };
+export { read } from "./read-cmd";
+export { wait } from "./wait-cmd";
 
 export interface Ctx {
   rt: Runtime;
@@ -122,30 +134,12 @@ export interface RoomMessages {
 export interface MessageBatch {
   groups: RoomMessages[];
   names: Record<string, string>;
-  synced?: boolean;
   pairs?: Record<string, string>;
   self?: string;
-  lease?: string;
   parents?: Record<string, Row>;
-  omitted?: number;
+  /** Printed before the messages: how much is still unread. */
+  header?: string;
   hint?: string;
-}
-
-export const WAIT_MAX_MESSAGES = 200;
-
-export function capBatch(batch: MessageBatch, max = WAIT_MAX_MESSAGES): MessageBatch {
-  const total = batch.groups.reduce((n, g) => n + g.rows.length, 0);
-  if (total <= max) return batch;
-  const keep = new Set(
-    batch.groups
-      .flatMap((g) => g.rows)
-      .sort((a, b) => b.sentAt - a.sentAt || b.seq - a.seq)
-      .slice(0, max),
-  );
-  const groups = batch.groups
-    .map((g) => ({ ...g, rows: g.rows.filter((r) => keep.has(r)) }))
-    .filter((g) => g.rows.length);
-  return { ...batch, groups, omitted: (batch.omitted ?? 0) + total - max };
 }
 
 const PAIRS_SOFT_MS = 2_000;
@@ -180,7 +174,7 @@ export async function attachParents(acct: Account, batch: MessageBatch): Promise
     const wanted = [...new Set(g.rows.map((r) => r.replyTo).filter((id): id is string => Boolean(id)))];
     const missing = wanted.filter((id) => !byId.has(id));
     if (missing.length) {
-      for (const r of await fetchRows(acct.http, g.room.channelId, PARENT_LOOKUP_LIMIT).catch(() => [])) byId.set(r.id, r);
+      for (const r of await recentRows(g.room.channelId, PARENT_LOOKUP_LIMIT).catch(() => [])) byId.set(r.id, r);
     }
     for (const id of wanted) {
       const parent = byId.get(id);
@@ -193,7 +187,7 @@ export async function attachParents(acct: Account, batch: MessageBatch): Promise
   return { ...batch, names, parents };
 }
 
-async function withPairs(acct: Account, batch: MessageBatch): Promise<MessageBatch> {
+export async function withPairs(acct: Account, batch: MessageBatch): Promise<MessageBatch> {
   const self = acct.identity.slug;
   const senders = batch.groups.flatMap((g) => g.rows.map((r) => r.sender));
   if (!senders.length) return { ...batch, self };
@@ -205,8 +199,8 @@ async function withPairs(acct: Account, batch: MessageBatch): Promise<MessageBat
 }
 
 export function errorText(e: unknown): string {
-  if (e instanceof HttpError) return `server returned ${e.status}: ${e.body.slice(0, 500)}`;
-  return e instanceof Error ? e.message : String(e);
+  if (e instanceof HttpError) return deviceRejectionText(e) ?? roomTerms(`server returned ${e.status}: ${e.body.slice(0, 500)}`);
+  return roomTerms(e instanceof Error ? e.message : String(e));
 }
 
 function inviteCode(arg: string): string {
@@ -240,7 +234,7 @@ export function checkName(name?: string) {
   if (error) throw new UserError(error);
 }
 
-async function createIdentity(rt: Runtime, displayName?: string): Promise<Account> {
+async function createIdentity(rt: Runtime, displayName?: string): Promise<{ acct: Account; backup: SignupBackup }> {
   checkName(displayName);
   const name = displayName?.trim() || randomAgentName();
   const username = usernameFor(name, (n) => hexFrom(rt.crypto.generateRandomBytes(n)));
@@ -251,28 +245,34 @@ async function createIdentity(rt: Runtime, displayName?: string): Promise<Accoun
     "human",
     rt.keyStore.asBrowserKeyStore(),
     rt.crypto,
-    { displayName: name, signupEndpoint: `${ORIGIN}/huddo-api` },
+    { displayName: name, signupEndpoint: `${ORIGIN}/huddo-api`, backup: true },
   );
+  const backup = backupResult(result.backupKey);
+  signupBackup = backup;
   updateConfig((c) => {
     c.active = result.slug;
   });
   rememberNames({ [result.slug]: name });
   const acct = accountFor(rt, result.slug);
   await acct.http.ensureAccountSubkey();
-  return acct;
+  await attachCore(rt, result.slug);
+  return { acct, backup };
 }
 
 function sameServer(a: string, b: string): boolean {
   return a.replace(/\/+$/, "") === b.replace(/\/+$/, "");
 }
 
-async function accountOrCreate(ctx: Ctx, displayName?: string): Promise<{ acct: Account; created: boolean }> {
+async function accountOrCreate(
+  ctx: Ctx,
+  displayName?: string,
+): Promise<{ acct: Account; created: boolean; backup: SignupBackup | typeof NO_BACKUP }> {
   const slug = activeSlug(ctx.as);
   if (slug) {
     const acct = accountFor(ctx.rt, slug);
-    if (ctx.as || sameServer(acct.identity.server_url, SERVER_URL)) return { acct, created: false };
+    if (ctx.as || sameServer(acct.identity.server_url, SERVER_URL)) return { acct, created: false, backup: NO_BACKUP };
   }
-  return { acct: await createIdentity(ctx.rt, displayName), created: true };
+  return { ...(await createIdentity(ctx.rt, displayName)), created: true };
 }
 
 export async function sortedSpaces(acct: Account): Promise<Space[]> {
@@ -282,45 +282,38 @@ export async function sortedSpaces(acct: Account): Promise<Space[]> {
 
 export async function roomFor(acct: Account, space: Pick<Space, "id" | "name">): Promise<Room | null> {
   const cached = loadState(acct.identity.slug).rooms?.[space.id];
-  if (cached) return { ...cached, name: space.name || cached.name };
+  if (cached) return { ...cached, name: safeLine(space.name || cached.name) };
   const channels = await fetchChannels(acct.http, space.id);
   const id = mainChannelId(channels, space.id);
   if (!id) return null;
-  const room = { spaceId: space.id, channelId: id, name: space.name };
+  const room = { spaceId: space.id, channelId: id, name: safeLine(space.name) };
   updateState(acct.identity.slug, (s) => {
     s.rooms = { ...s.rooms, [space.id]: room };
   });
   return room;
 }
 
-async function latestSeq(acct: Account, channelId: string): Promise<number> {
-  return latestSeqOf(acct.http, channelId);
-}
-
-export async function makeDefault(acct: Account, room: Room, baseline = false, onlyIfUnset = false): Promise<void> {
-  const seq = baseline ? await latestSeq(acct, room.channelId).catch(() => 0) : 0;
+export async function makeDefault(acct: Account, room: Room, onlyIfUnset = false): Promise<void> {
   updateState(acct.identity.slug, (s) => {
     if (!onlyIfUnset || !s.room) s.room = room;
     s.rooms = { ...s.rooms, [room.spaceId]: room };
-    if (baseline || s.cursors?.[room.channelId] === undefined) {
-      s.cursors = { ...s.cursors, [room.channelId]: Math.max(seq, s.cursors?.[room.channelId] ?? 0) };
-    }
   });
 }
 
 export async function resolveRoomArg(acct: Account, arg: string): Promise<Room> {
+  if (arg.includes(",")) throw new UserError(`"${arg}" is a list of rooms; only wait takes a comma-separated list, other commands take one room`);
   const spaces = await sortedSpaces(acct);
   const space = /^\d+$/.test(arg) ? spaces[Number(arg) - 1] : spaces.find((s) => s.id === arg);
   if (!space) throw new UserError(`no huddo "${arg}" for ${acct.identity.slug} (see list)`);
   const room = await roomFor(acct, space);
-  if (!room) throw new UserError(`no chat channel found in ${space.id}`);
+  if (!room) throw new UserError(`cannot open room ${space.id}: it has no chat`);
   return room;
 }
 
 export async function currentRoom(acct: Account, roomArg?: string): Promise<Room> {
   if (roomArg) {
     const room = await resolveRoomArg(acct, roomArg);
-    await makeDefault(acct, room, false, true);
+    await makeDefault(acct, room, true);
     return room;
   }
   const state = loadState(acct.identity.slug);
@@ -329,7 +322,7 @@ export async function currentRoom(acct: Account, roomArg?: string): Promise<Room
   const latest = spaces[spaces.length - 1];
   if (!latest) throw new UserError("this identity is not in any room yet: join one with an invite link, or create one");
   const room = await roomFor(acct, latest);
-  if (!room) throw new UserError(`no chat channel found in ${latest.id}`);
+  if (!room) throw new UserError(`cannot open room ${latest.id}: it has no chat`);
   await makeDefault(acct, room);
   return room;
 }
@@ -346,44 +339,21 @@ export async function resolveNames(acct: Account, rows: Row[]): Promise<Record<s
   return { ...known, ...found };
 }
 
-export function setSystemCursor(slug: string, channelId: string, cursor: SystemCursor | undefined) {
-  if (!cursor) return;
-  updateState(slug, (s) => {
-    s.systemCursors = { ...s.systemCursors, [channelId]: cursor };
-  });
-}
-
-function storeRows(slug: string, channelId: string, rows: Row[]): boolean {
-  try {
-    appendRows(slug, channelId, rows);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function ackRows(http: PuffoHttpClient, rows: Row[], self: string): void {
   const ids = rows.filter((r) => r.sender !== self && !r.system && r.id.startsWith("msg_")).map((r) => r.id);
   if (ids.length) void http.post("/messages/ack", { envelope_ids: ids }).catch(() => undefined);
 }
 
-export function advanceCursor(slug: string, channelId: string, seq: number) {
-  if (!seq) return;
-  updateState(slug, (s) => {
-    s.cursors = { ...s.cursors, [channelId]: Math.max(seq, s.cursors?.[channelId] ?? 0) };
-  });
-}
-
 export function messageJson(room: Room | null, row: Row, batch: MessageBatch) {
   const pairs = batch.pairs ?? {};
   return {
-    ...(room ? { spaceId: room.spaceId, channelId: room.channelId, room: room.name } : {}),
+    ...(room ? { spaceId: room.spaceId, room: room.name } : {}),
     ...row,
     sender_name: batch.names[row.sender] ?? null,
     reply_to_sender: (row.replyTo && batch.parents?.[row.replyTo]?.sender) || null,
     reply_to_preview: row.replyTo && batch.parents?.[row.replyTo] ? parentPreview(batch.parents[row.replyTo], batch.names) : null,
-    operator_of: Object.entries(pairs).find(([, operator]) => operator === row.sender)?.[0] ?? null,
-    from_my_operator: Boolean(batch.self && pairs[batch.self] === row.sender),
+    paired_with: Object.entries(pairs).find(([, operator]) => operator === row.sender)?.[0] ?? null,
+    from_paired: Boolean(batch.self && pairs[batch.self] === row.sender),
     peer: isPeer(row.sender, pairs, batch.self),
   };
 }
@@ -391,17 +361,13 @@ export function messageJson(room: Room | null, row: Row, batch: MessageBatch) {
 export function formatBatch(batch: MessageBatch, withRoom: boolean): string {
   const pairs = batch.pairs ?? {};
   const lines = batch.groups.flatMap((g) =>
-    g.rows.map((r) => formatRow(r, batch.names, withRoom ? `[${g.room.name} ${g.room.spaceId}] ` : "", operatorTag(r.sender, pairs, batch.self), batch.parents)),
+    g.rows.map((r) => {
+      const tag = [operatorTag(r.sender, pairs, batch.self), r.new ? "[new]" : ""].filter(Boolean).join(" ");
+      return formatRow(r, batch.names, withRoom ? `[${g.room.name} ${g.room.spaceId}] ` : "", tag, batch.parents);
+    }),
   );
-  const only = batch.groups.length === 1 ? batch.groups[0] : null;
-  const oldest = only?.rows.find((r) => r.seq > 0)?.seq;
-  const howTo = only && oldest
-    ? `huddo read --room ${only.room.spaceId} --before ${oldest}`
-    : "huddo read --room <spaceId> --before <#seq>";
-  const note = batch.omitted
-    ? [`(${batch.omitted} earlier unread ${batch.omitted === 1 ? "message" : "messages"} skipped; showing the latest ${lines.length}. Read them with \`${howTo}\`.)`]
-    : [];
-  return [...note, ...lines, ...(batch.hint ? [`(${batch.hint})`] : [])].join("\n");
+  const header = batch.header ? [`(${safeLine(batch.header)})`] : [];
+  return [...header, ...lines, ...(batch.hint ? [`(${safeLine(batch.hint)})`] : [])].join("\n");
 }
 
 export async function join(ctx: Ctx, invite: string, name?: string, avatar?: string) {
@@ -417,7 +383,7 @@ export async function join(ctx: Ctx, invite: string, name?: string, avatar?: str
     throw e;
   }
   const picked = avatar ? await avatarBytes(avatar) : null;
-  const { acct, created } = await accountOrCreate(ctx, name);
+  const { acct, created, backup } = await accountOrCreate(ctx, name);
   if (!created && name?.trim()) {
     await updateProfile(acct.http, acct.identity.slug, { display_name: name.trim() });
     rememberNames({ [acct.identity.slug]: name.trim() });
@@ -425,7 +391,7 @@ export async function join(ctx: Ctx, invite: string, name?: string, avatar?: str
   if (picked) await setAvatar(ctx, picked);
   const alreadyMember = (await fetchSpaces(acct.http)).some((s) => s.id === preview.space_id);
   if (!alreadyMember) {
-    await redeemInviteLink(acct.http, ctx.rt.crypto, await eventSigner(ctx.rt, acct), {
+    await redeemInviteLink(acct.http, ctx.rt.crypto, await coreSigner(), {
       shortCode: code,
       inviteId: preview.invite_id,
       spaceId: preview.space_id,
@@ -437,71 +403,63 @@ export async function join(ctx: Ctx, invite: string, name?: string, avatar?: str
       if (!channelId) throw new UserError("this invite does not include a chat");
       return { spaceId: preview.space_id, channelId, name: preview.space_name };
     })();
-  await makeDefault(acct, room, !alreadyMember);
-  return {
-    json: { slug: acct.identity.slug, created, joined: !alreadyMember, ...room },
+  await makeDefault(acct, room);
+  return withBackup(backup, {
+    json: { slug: acct.identity.slug, created, joined: !alreadyMember, spaceId: room.spaceId, name: room.name },
     text: `${created ? "signed up as" : "as"} ${nameAndSlug(await ownName(acct, name), acct.identity.slug)}: ${alreadyMember ? "already in" : "joined"} "${room.name}" (${room.spaceId})`,
-  };
+  });
 }
 
-export async function newHuddo(ctx: Ctx, name?: string, me: { displayName?: string; avatar?: string } = {}) {
+export async function newHuddo(
+  ctx: Ctx,
+  name?: string,
+  me: { displayName?: string; avatar?: string; inviteCode?: string } = {},
+) {
   checkName(me.displayName);
+  // Before the identity is made, as for the display name, so a refused name leaves nothing behind.
+  const nameError = name?.trim() ? newRoomNameError(name) : null;
+  if (nameError) throw new UserError(nameError);
+  const given = me.inviteCode?.trim() ? normalizeRoomCode(me.inviteCode) : undefined;
+  if (given === null) throw new UserError(ROOM_CODE_FORMAT);
+  const inviteCode = given ?? loadConfig().inviteCode;
   const picked = me.avatar ? await avatarBytes(me.avatar) : null;
-  const { acct, created } = await accountOrCreate(ctx, me.displayName);
+  const { acct, created, backup } = await accountOrCreate(ctx, me.displayName);
   if (!created && me.displayName?.trim()) {
     await updateProfile(acct.http, acct.identity.slug, { display_name: me.displayName.trim() });
     rememberNames({ [acct.identity.slug]: me.displayName.trim() });
   }
   if (picked) await setAvatar(ctx, picked);
-  const signer = await eventSigner(ctx.rt, acct);
   const made = await createSpaceWithGeneral(
-    {
-      createSpace: (n) => createSpace(acct.http, ctx.rt.crypto, signer, n),
-      createChannel: (spaceId, n) => createChannel(acct.http, ctx.rt.crypto, signer, spaceId, n),
-    },
-    signer.slug,
+    coreSpaceCommands(await awaitCoreSpaceEvents(), ctx.rt.crypto, inviteCode),
+    acct.identity.slug,
     name?.trim() || defaultGroupName(),
-  );
-  await updateChannel(acct.http, made.spaceId, made.channelId, { is_encrypted: false });
+  ).catch((error: unknown) => {
+    const refusal = roomCodeRefusal(error, CLI_WORDS, ORIGIN);
+    throw refusal ? new UserError(refusal) : error;
+  });
+  if (given) updateConfig((c) => {
+    c.inviteCode = given;
+  });
   const room = { spaceId: made.spaceId, channelId: made.channelId, name: made.spaceName };
-  await makeDefault(acct, room, true);
+  await makeDefault(acct, room);
   const link = await invite(ctx, room.spaceId).then((r) => r.json.url, () => null);
   const named = me.displayName?.trim();
   const note =
     named && !name?.trim()
       ? `\nnote: --name sets your own name ("${named}"), not the room's. The room got the default name "${room.name}"; pass --room-name (MCP: room_name) to name it.`
       : "";
-  return {
-    json: { slug: acct.identity.slug, created, ...room, inviteUrl: link },
+  return withBackup(backup, {
+    json: { slug: acct.identity.slug, created, spaceId: room.spaceId, name: room.name, inviteUrl: link },
     text: `${created ? "signed up as" : "as"} ${nameAndSlug(await ownName(acct, me.displayName), acct.identity.slug)}: created "${room.name}" (${room.spaceId})${link ? `\ninvite link: ${link}` : ""}${note}`,
-  };
+  });
 }
 
-export const nameAndSlug = (name: string | null | undefined, slug: string) => (name?.trim() ? `${name.trim()} @${slug}` : `@${slug}`);
+export const nameAndSlug = (name: string | null | undefined, slug: string) => (name?.trim() ? `${safeLine(name.trim())} @${slug}` : `@${slug}`);
 
-export type Surface = "cli" | "mcp";
-
-const STEP_WORDS: Record<Surface, { read: string; send: string; pair: string; avatar: string; listen: string }> = {
-  cli: {
-    read: "`huddo read --limit 30`",
-    send: "`huddo send`",
-    pair: "run `huddo pair`",
-    avatar: "`huddo identity update-avatar <library-id or image path>`",
-    listen:
-      "run `huddo wait --timeout 600` in the background if your harness wakes you when it exits, otherwise loop `huddo wait --timeout 50`; start it again every time it returns",
-  },
-  mcp: {
-    read: "huddo_read (limit 30)",
-    send: "huddo_send",
-    pair: "call huddo_pair",
-    avatar: "huddo_update_avatar",
-    listen: "call huddo_wait, and call it again every time it returns",
-  },
-};
-
+/** What `new` and `join` print after their result: for a join, the room owner's context, then the one next step. */
 export interface Onboarding {
-  steps: string[];
-  pairing: { code: string; expiresInSeconds: number } | null;
+  step: string;
+  about?: string[];
 }
 
 async function syncOperator(acct: Account): Promise<string | null> {
@@ -516,56 +474,40 @@ async function syncOperator(acct: Account): Promise<string | null> {
   return operator;
 }
 
-export async function onboarding(ctx: Ctx, kind: "new" | "join", spaceId: string, inviteUrl: string | null, surface: Surface): Promise<Onboarding> {
+/** `room` is the result of `new` or `join`. Starts the steps of the room (`room-steps.ts`). */
+export async function onboarding(
+  ctx: Ctx,
+  kind: "new" | "join",
+  room: { spaceId: string; inviteUrl?: string | null; joined?: boolean; backup_key?: string | null },
+): Promise<Onboarding> {
   const acct = account(ctx);
-  const w = STEP_WORDS[surface];
-  const paired = Boolean(await syncOperator(acct));
-  const pairing = paired
-    ? null
-    : await pair(ctx, spaceId).then(
-        (r) => ({ code: r.json.code, expiresInSeconds: r.json.expiresInSeconds }),
-        () => null,
-      );
-  const tell = (what: string) => `Tell your operator in plain, everyday words (no slugs, room ids or commands): ${what}`;
-  const open = kind === "new" && inviteUrl ? `Open ${inviteUrl} to join. Then` : "In the room,";
-  const pairStep = pairing
-    ? tell(
-        `"${open} click your avatar and enter ${pairing.code} under Pair your agent." The code lasts 5 minutes; if it runs out, ${w.pair} again and send the new one. Pairing tells you which messages come from them. Put ${kind === "new" && inviteUrl ? "the link and the code" : "the code"} word for word in your final reply to them: some harnesses show only your last message, or shorten it.`,
-      )
-    : kind === "new" && inviteUrl
-      ? tell(`"Open ${inviteUrl} to join." Put the link word for word in your final reply to them: some harnesses show only your last message, or shorten it.`)
-      : null;
-  const steps =
-    kind === "new"
-      ? [
-          `Post a one-line introduction with ${w.send}: who you are (your model and harness) and what you can help with.`,
-          "Post one short message that sums up what you and your operator discussed, so whoever joins has the context. Leave out secrets and private details.",
-        ]
-      : [
-          `Read the recent messages with ${w.read} to learn the context before you speak.`,
-          `Post a one-line introduction with ${w.send}: who you are (your model and harness) and what you can help with.`,
-        ];
-  const [profile] = await fetchProfiles(acct.http, [acct.identity.slug]).catch(() => []);
-  if (!profile?.avatar_url) {
-    const ids = await avatarLibrary().then(avatarChoices, () => `see ${ORIGIN}/agent-avatars/index.json`);
-    steps.push(`Optional: set an avatar so people can tell you apart from agents on the same model. An image of your own (for example a small SVG that fits your name) works best; otherwise use a library id (${ids}): ${w.avatar}.`);
-  }
-  if (pairStep) steps.push(pairStep);
-  steps.push(
-    `Start listening, unless your operator asked you not to: ${w.listen}. You only see messages and new members while you listen, so keep listening for as long as you are in the room; if you can't, tell your operator and post a note in the room.`,
-  );
-  return { steps, pairing };
+  await syncOperator(acct);
+  const hint = enterRoom(acct.identity.slug, room.spaceId, {
+    created: kind === "new",
+    alreadyMember: room.joined === false,
+    recoveryCode: room.backup_key,
+    inviteUrl: room.inviteUrl,
+  });
+  return { step: hint.next, about: kind === "join" ? await roomAbout(acct, room.spaceId) : undefined };
 }
 
-export function onboardingText(o: Onboarding): string {
-  const head = "Next steps, in order:";
-  return [head, ...o.steps.map((step, i) => `${i + 1}. ${step}`)].join("\n");
+async function roomAbout(acct: Account, spaceId: string): Promise<string[]> {
+  const [welcome, home] = await Promise.all([
+    getAbout(acct.http, spaceId).then((a) => a.welcome ?? "", () => undefined),
+    getHome(acct.http, spaceId).catch(() => undefined),
+  ]);
+  return aboutLines(welcome, home);
+}
+
+/** The lines before the next step: the welcome message and the home of a joined room, and whose words they are. */
+export function onboardingAbout(o: Onboarding): string[] {
+  return o.about ? [...o.about, OWNER_CONTEXT] : [];
 }
 
 export async function invite(ctx: Ctx, roomArg?: string) {
   const acct = account(ctx);
   const room = await currentRoom(acct, roomArg);
-  const signer = await eventSigner(ctx.rt, acct);
+  const signer = await coreSigner();
   const scope = {
     space_grant: { role: "member" as const },
     channel_grants: [{ channel_id: room.channelId, role: "member" as const }],
@@ -592,12 +534,11 @@ export async function archive(ctx: Ctx, archived: boolean, roomArg?: string) {
   return { json: { spaceId: room.spaceId, room: room.name, archivedAt: resp.archived_at }, text };
 }
 
-const ROOM_NAME_MAX = 80;
-
 export async function rename(ctx: Ctx, name: string, roomArg?: string) {
   const next = name.trim();
   if (!next) throw new UserError("usage: huddo rename <new room name>");
-  if ([...next].length > ROOM_NAME_MAX) throw new UserError(`a room name is at most ${ROOM_NAME_MAX} characters`);
+  const nameError = roomRenameError(next);
+  if (nameError) throw new UserError(nameError);
   const acct = account(ctx);
   const room = await currentRoom(acct, roomArg);
   await updateSpace(acct.http, room.spaceId, { name: next });
@@ -629,7 +570,7 @@ export async function leave(ctx: Ctx, roomArg?: string, to?: string) {
   } else if (to) {
     throw new UserError(`only the owner of "${room.name}" can hand it over`);
   }
-  await leaveSpace(acct.http, ctx.rt.crypto, await eventSigner(ctx.rt, acct), room.spaceId, [], heir?.slug);
+  await (await awaitCoreSpaceEvents()).submit(leaveEvents(room.spaceId, [], heir?.slug, nonceFrom(ctx.rt.crypto)));
   updateState(acct.identity.slug, (s) => {
     if (s.room?.spaceId === room.spaceId) delete s.room;
     if (s.rooms) delete s.rooms[room.spaceId];
@@ -650,7 +591,7 @@ export async function transfer(ctx: Ctx, who: string, roomArg?: string) {
   }
   const heir = await resolveMember(acct, room.spaceId, who);
   if (heir.slug === acct.identity.slug) throw new UserError("pick another member as the new owner");
-  await transferSpaceOwnership(acct.http, ctx.rt.crypto, await eventSigner(ctx.rt, acct), room.spaceId, heir.slug);
+  await (await awaitCoreSpaceEvents()).submit([transferEvent(room.spaceId, heir.slug, nonceFrom(ctx.rt.crypto))]);
   const label = nameAndSlug(heir.name, heir.slug);
   return {
     json: { spaceId: room.spaceId, room: room.name, newOwner: heir.slug },
@@ -660,7 +601,7 @@ export async function transfer(ctx: Ctx, who: string, roomArg?: string) {
 
 const PAIR_TTL_MS = 5 * 60 * 1000;
 
-export async function pair(ctx: Ctx, roomArg?: string) {
+export async function pair(ctx: Ctx, roomArg?: string, next = "Then run `huddo pair --check` until it reports paired.") {
   const acct = account(ctx);
   const room = await currentRoom(acct, roomArg);
   let code = "";
@@ -679,8 +620,8 @@ export async function pair(ctx: Ctx, roomArg?: string) {
   });
   const text = [
     `pairing code ${code} for "${room.name}" (valid 5 minutes)`,
-    `Send it to your operator in your own chat with them, never in the room: they open "${room.name}" in Huddo, click their avatar and enter ${code} under Pair your agent.`,
-    "Then run `huddo pair --check` (MCP: huddo_pair_check) until it reports paired.",
+    `Send it in your original chat, never in the room: the person there opens "${room.name}" in Huddo, clicks their avatar and enters ${code} under Pair your agent.`,
+    next,
   ].join("\n");
   return { json: { code, spaceId: room.spaceId, room: room.name, expiresInSeconds: PAIR_TTL_MS / 1000 }, text };
 }
@@ -690,7 +631,7 @@ export async function pairCheck(ctx: Ctx) {
   const pending = loadState(acct.identity.slug).pairing;
   if (!pending) {
     const operator = await syncOperator(acct);
-    return { json: { paired: Boolean(operator), operator: operator ?? null }, text: operator ? `paired with operator ${operator}` : "no pairing in progress; start one with huddo pair" };
+    return { json: { paired: Boolean(operator), paired_with: operator ?? null }, text: operator ? `paired with ${operator}` : "no pairing in progress; start one with huddo pair" };
   }
   const result = await pairingResult(acct.http, pending.spaceId, pending.code).catch((e) => {
     throw new UserError(`could not check pairing: ${errorText(e)}`);
@@ -702,7 +643,7 @@ export async function pairCheck(ctx: Ctx) {
       });
       return { json: { paired: false, expired: true }, text: `code ${pending.code} expired; start again with huddo pair` };
     }
-    return { json: { paired: false, code: pending.code }, text: `not paired yet; waiting for your operator to enter ${pending.code}` };
+    return { json: { paired: false, code: pending.code }, text: `not paired yet; waiting for the person in your original chat to enter ${pending.code}` };
   }
   const operator = result.operator;
   const names = await resolveNames(acct, [{ sender: operator } as Row]).catch(() => cachedNames());
@@ -711,7 +652,7 @@ export async function pairCheck(ctx: Ctx) {
     delete s.pairing;
     s.operator = operator;
   });
-  return { json: { paired: true, operator, operatorName }, text: `paired with ${operatorName} (${operator}); "${pending.room}" shows it as a system notice` };
+  return { json: { paired: true, paired_with: operator, paired_with_name: operatorName }, text: `paired with ${safeLine(operatorName)} (${operator}); "${pending.room}" shows it as a system notice` };
 }
 
 export async function unpair(ctx: Ctx) {
@@ -725,7 +666,7 @@ export async function unpair(ctx: Ctx) {
     });
     const names = await resolveNames(acct, [{ sender: result.operator } as Row]).catch(() => cachedNames());
     const name = names[result.operator] ?? result.operator;
-    return { json: { unpaired: true, operator: result.operator }, text: `unpaired from ${name} (${result.operator}); the room shows it as a system notice` };
+    return { json: { unpaired: true, paired_with: result.operator }, text: `unpaired from ${name} (${result.operator}); the room shows it as a system notice` };
   } catch (e) {
     if (e instanceof PairingError && e.status === 404) {
       updateState(slug, (s) => {
@@ -743,19 +684,18 @@ export async function list(ctx: Ctx) {
   const spaces = await sortedSpaces(acct);
   const rooms = await Promise.all(spaces.map(async (s, i) => {
     const room = await roomFor(acct, s).catch(() => null);
-    const last = room ? (await fetchRows(acct.http, room.channelId, 1).catch(() => [])).at(-1) : undefined;
+    const last = room ? (await recentRows(room.channelId, 1).catch(() => [])).at(-1) : undefined;
     return {
       index: i + 1,
       spaceId: s.id,
-      name: s.name,
-      channelId: room?.channelId ?? null,
+      name: safeLine(s.name),
       lastMessageAt: last ? new Date(last.sentAt).toISOString() : null,
       default: s.id === current,
     };
   }));
   return {
     json: rooms,
-    text: rooms.map((r) => `${r.default ? "*" : " "} ${r.index}. ${r.name}  ${r.spaceId}  ${r.channelId ?? "-"}  last: ${r.lastMessageAt ?? "-"}`).join("\n")
+    text: rooms.map((r) => `${r.default ? "*" : " "} ${r.index}. ${r.name}  ${r.spaceId}  last: ${r.lastMessageAt ?? "-"}`).join("\n")
       || "(not in any room yet)",
   };
 }
@@ -767,7 +707,7 @@ export async function use(ctx: Ctx, roomArg: string) {
   return { json: room, text: `default room: "${room.name}" (${room.spaceId})` };
 }
 
-async function withReactions(acct: Account, room: Room, rows: Row[]): Promise<Row[]> {
+export async function withReactions(acct: Account, room: Room, rows: Row[]): Promise<Row[]> {
   const ids = rows.filter((r) => !r.system && !r.whisper && !r.revision).map((r) => r.id);
   if (ids.length === 0) return rows;
   const snapshot = await fetchReactionSnapshot(acct.http, room.spaceId, room.channelId, ids).catch(() => null);
@@ -784,77 +724,54 @@ function clampInt(value: number | undefined, fallback: number, max: number): num
   return Math.max(1, Math.min(max, Math.floor(value ?? fallback)));
 }
 
-async function daemonRooms(slug: string): Promise<Set<string>> {
-  if (!daemonEnabled()) return new Set();
-  try {
-    const s = (await requestDaemon("status", {}, { timeoutMs: 500 })) as { ok?: boolean; slug?: string; wsConnected?: boolean; rooms?: { spaceId: string }[] };
-    return s.ok && s.slug === slug && s.wsConnected ? new Set((s.rooms ?? []).map((r) => r.spaceId)) : new Set();
-  } catch {
-    return new Set();
-  }
-}
-
-function daemonKeeps(daemon: Set<string>, slug: string, room: Room): boolean {
-  return daemon.has(room.spaceId) && loadMeta(slug, room.channelId).seeded;
-}
-
 export const FIND_PAGES = 10;
 
-export async function storedUntil(acct: Account, room: Room, enough: (rows: Row[]) => boolean, maxPages = Infinity): Promise<Row[]> {
-  const slug = acct.identity.slug;
-  if (!daemonKeeps(await daemonRooms(slug), slug, room)) {
-    try {
-      await syncRoom(acct.http, slug, room.channelId);
-    } catch (e) {
-      if (!storedRows(slug, room.channelId).length) throw e;
-    }
+export async function storedUntil(
+  acct: Account,
+  room: Room,
+  enough: (rows: Row[]) => boolean,
+  maxPages = Infinity,
+  failures?: unknown[],
+): Promise<Row[]> {
+  let complete = false;
+  try {
+    complete = (await syncRoom(room.channelId)).complete;
+  } catch (e) {
+    if (!(await storedRows(room.channelId)).length) throw e;
+    failures?.push(e);
   }
-  let rows = storedRows(slug, room.channelId);
-  for (let page = 0; page < maxPages && !enough(rows) && !loadMeta(slug, room.channelId).complete; page += 1) {
+  let rows = await storedRows(room.channelId);
+  for (let page = 0; page < maxPages && !enough(rows) && !complete; page += 1) {
     const before = rows.length;
     try {
-      await extendBack(acct.http, slug, room.channelId);
+      complete = (await extendBack(room.channelId)).complete;
     } catch (e) {
       if (!rows.length) throw e;
+      failures?.push(e);
       break;
     }
-    rows = storedRows(slug, room.channelId);
-    if (rows.length === before && !loadMeta(slug, room.channelId).complete) break;
+    rows = await storedRows(room.channelId);
+    if (rows.length === before && !complete) break;
   }
   return rows;
 }
 
-export function notFound(id: string, room: Room, slug: string): UserError {
-  return loadMeta(slug, room.channelId).complete
+export async function notFound(id: string, room: Room): Promise<UserError> {
+  return (await loadMeta(room.channelId)).complete
     ? new UserError(`message ${id} not found in "${room.name}" (${room.spaceId})`)
     : new UserError(`message ${id} not found in the stored history of "${room.name}"; check the id, or run \`huddo sync --full --room ${room.spaceId}\` and try again`);
 }
 
-export async function read(ctx: Ctx, opts: { room?: string; limit?: number; before?: number; after?: number }): Promise<MessageBatch> {
-  const acct = account(ctx);
-  const slug = acct.identity.slug;
-  const room = await currentRoom(acct, opts.room);
-  const page = { before: opts.before, after: opts.after, limit: clampInt(opts.limit, 20, HISTORY_MAX) };
-  const paging = opts.before !== undefined || opts.after !== undefined;
-  const seenBefore = loadState(slug).cursors?.[room.channelId] ?? 0;
-  const stored = await storedUntil(acct, room, (rows) =>
-    opts.after !== undefined ? rows.some((r) => r.seq <= opts.after!) : pageRows(rows, page).length >= page.limit,
-  );
-  const messages = pageRows(stored, page);
-  const events = await fetchSystemRows(acct.http, room).catch(() => ({ rows: [], cursor: undefined }));
-  const from = paging || messages.length >= page.limit ? (messages[0]?.sentAt ?? 0) : 0;
-  const until = paging ? (messages[messages.length - 1]?.sentAt ?? 0) : Infinity;
-  const rows = await withReactions(acct, room, mergeByTime(messages, events.rows.filter((r) => r.sentAt >= from && r.sentAt <= until)));
-  const names = await resolveNames(acct, rows);
-  if (!paging) {
-    ackRows(acct.http, messages, slug);
-    advanceCursor(slug, room.channelId, messages.reduce((m, r) => Math.max(m, r.seq), 0));
-    setSystemCursor(slug, room.channelId, events.cursor);
+/** No server at all (fetch itself failed) exits 2, like every other "server unavailable". */
+export function offline(e: unknown): never {
+  throw e instanceof TypeError && e.message === "fetch failed" ? new NetworkError(`cannot reach the Huddo server: ${e.message}`) : e;
+}
+
+/** A read that could not reach the server: `batch` holds what was stored, marked partial, and nothing was marked read. */
+export class ReadFailed extends NetworkError {
+  constructor(message: string, readonly batch: MessageBatch, cause?: unknown) {
+    super(message, { cause });
   }
-  const hint = paging
-    ? pageHint(room.spaceId, messages, stored, loadMeta(slug, room.channelId).complete)
-    : skippedHint(room.spaceId, messages, stored, seenBefore, slug, loadMeta(slug, room.channelId).complete);
-  return withPairs(acct, await attachParents(acct, { groups: [{ room, rows }], names, hint }));
 }
 
 async function storeBatch(acct: Account, groups: RoomMessages[], hint?: string): Promise<MessageBatch> {
@@ -882,17 +799,18 @@ async function sendersNamed(acct: Account, rows: Row[], who: string): Promise<Se
 }
 
 async function storedRooms(acct: Account, roomArg?: string) {
-  const slug = acct.identity.slug;
   const rooms = roomArg ? [await resolveRoomArg(acct, roomArg)] : await allRooms(acct);
-  const daemon = await daemonRooms(slug);
-  const stored: { room: Room; rows: Row[] }[] = [];
+  const stored: { room: Room; rows: Row[]; complete: boolean }[] = [];
   const failed: string[] = [];
   for (const room of rooms) {
-    if (!daemonKeeps(daemon, slug, room)) await syncRoom(acct.http, slug, room.channelId).catch(() => failed.push(room.name));
-    stored.push({ room, rows: mergeRevisions(storedRows(slug, room.channelId)) });
+    const meta = await syncRoom(room.channelId).catch(() => {
+      failed.push(room.name);
+      return null;
+    });
+    stored.push({ room, rows: mergeRevisions(await storedRows(room.channelId)), complete: meta?.complete ?? false });
   }
   const partial = stored
-    .filter((s) => !loadMeta(slug, s.room.channelId).complete)
+    .filter((s) => !s.complete)
     .map((s) => `${s.room.name} (${s.room.spaceId}) from ${s.rows[0] ? new Date(s.rows[0].sentAt).toISOString().slice(0, 10) : "now"}`);
   const notes: string[] = [];
   if (partial.length) notes.push(`searched local history only: ${partial.join(", ")}; \`huddo sync --full --room <spaceId>\` fetches the rest`);
@@ -929,11 +847,12 @@ export async function files(ctx: Ctx, opts: { query?: string; room?: string; fro
     mime_type: a.mime_type,
     size: a.size,
     local_path: cachedFile(slug, a.blob_id),
+    ...(row.whisper ? { whisper_to: row.whisper.to } : {}),
   }));
   const lines = shown.map(
     (f) =>
-      `[${f.room} ${f.spaceId}] #${f.seq} ${f.msgid} | ${f.sender_name ? `${f.sender} (${f.sender_name})` : f.sender} | ${f.sentAt} | ${f.filename} (${f.mime_type}, ${formatSize(f.size)}) | ${f.local_path ?? "not downloaded"}`,
-  );
+      `[${f.room} ${f.spaceId}] #${f.seq} ${f.msgid} | ${f.sender_name ? `${f.sender} (${f.sender_name})` : f.sender} | ${f.sentAt} | ${f.whisper_to ? `[whisper to ${f.whisper_to}] ` : ""}${f.filename} (${f.mime_type}, ${formatBytes(f.size)}) | ${f.local_path ?? "not downloaded"}`,
+  ).map(safeLine);
   const summary = [`${hits.length} ${hits.length === 1 ? "file" : "files"}${hits.length > limit ? `, showing the latest ${limit}` : ""}`, ...notes].join("; ");
   return { json: shown, text: [...lines, `(${summary})`].join("\n") };
 }
@@ -950,6 +869,7 @@ export async function search(
   const limit = clampInt(opts.limit, 20, HISTORY_MAX);
   const { stored, notes } = await storedRooms(acct, opts.room);
   const from = opts.from ? await sendersNamed(acct, stored.flatMap((s) => s.rows), opts.from) : undefined;
+  if (from && !from.size) throw new UserError(`no sender named "${opts.from}" in the stored messages; use a slug or a display name`);
   const q: SearchQuery = {
     text,
     from,
@@ -982,17 +902,16 @@ export async function show(ctx: Ctx, opts: { id: string; room?: string; context?
 
 export async function sync(ctx: Ctx, opts: { room?: string; full?: boolean }) {
   const acct = account(ctx);
-  const slug = acct.identity.slug;
   const rooms = opts.room ? [await resolveRoomArg(acct, opts.room)] : await allRooms(acct);
   const out: { spaceId: string; room: string; messages: number; complete: boolean; oldest: string | null }[] = [];
   for (const room of rooms) {
-    let meta = await syncRoom(acct.http, slug, room.channelId);
+    let meta = await syncRoom(room.channelId);
     while (opts.full && !meta.complete) {
-      const before = storedRows(slug, room.channelId).length;
-      meta = await extendBack(acct.http, slug, room.channelId);
-      if (!meta.complete && storedRows(slug, room.channelId).length === before) break;
+      const before = (await storedRows(room.channelId)).length;
+      meta = await extendBack(room.channelId);
+      if (!meta.complete && (await storedRows(room.channelId)).length === before) break;
     }
-    const rows = storedRows(slug, room.channelId);
+    const rows = await storedRows(room.channelId);
     out.push({
       spaceId: room.spaceId,
       room: room.name,
@@ -1007,179 +926,8 @@ export async function sync(ctx: Ctx, opts: { room?: string; full?: boolean }) {
   return { json: out, text: text || "not in any room yet" };
 }
 
-const WAIT_CYCLE_MS = 3000;
-const WAIT_SPACE_REFRESH_MS = 30_000;
-
-export interface WaitOptions {
-  deadline: number;
-  room?: string;
-  since?: number;
-  signal?: AbortSignal;
-}
-
-export function emptyBatch(synced = true): MessageBatch {
-  return { groups: [], names: {}, synced };
-}
-
-export async function wait(ctx: Ctx, opts: WaitOptions): Promise<MessageBatch> {
-  const acct = account(ctx);
-  markListening(acct.identity.slug, opts.room);
-  try {
-    if (opts.since === undefined && daemonEnabled() && acct.identity.slug === activeSlug()) {
-      const viaDaemon = await waitViaDaemon(acct.identity.slug, opts);
-      if (viaDaemon) return withPairs(acct, capBatch(viaDaemon));
-    }
-    return withPairs(acct, capBatch(await waitDirect(ctx, opts)));
-  } finally {
-    markStopped(acct.identity.slug);
-  }
-}
-
-export async function commitBatch(batch: MessageBatch): Promise<void> {
-  if (batch.lease) await commitLease(batch.lease);
-}
-
-export async function waitDirect(ctx: Ctx, opts: WaitOptions): Promise<MessageBatch> {
-  const dl = new Deadline(opts.deadline, opts.signal);
-  const acct = account(ctx);
-  const slug = acct.identity.slug;
-  let everOk = false;
-  let synced = false;
-  let lastFailed = false;
-  let lastError: unknown = null;
-  let failedCycles = 0;
-
-  const attempt = async <T>(work: () => Promise<T>): Promise<T | undefined> => {
-    try {
-      const value = await dl.race(work());
-      everOk = true;
-      lastFailed = false;
-      return value;
-    } catch (e) {
-      if (e instanceof DeadlineReached || e instanceof UserError) throw e;
-      lastFailed = true;
-      lastError = e;
-      return undefined;
-    }
-  };
-  const networkError = () =>
-    new NetworkError(lastError ? `cannot reach the Huddo server: ${errorText(lastError)}` : "cannot reach the Huddo server before the deadline");
-
-  const cursors = new Map<string, number>();
-  const systemCursors = new Map<string, SystemCursor>();
-  let rooms: Room[] = [];
-  let refreshedAt = 0;
-  let narrowed: Room | null = null;
-
-  const refreshRooms = async (): Promise<boolean> => {
-    if (opts.room) {
-      narrowed ??= (await attempt(() => resolveRoomArg(acct, opts.room!))) ?? null;
-      if (!narrowed) return false;
-      rooms = [narrowed];
-    } else {
-      const spaces = await attempt(() => sortedSpaces(acct));
-      if (!spaces) return false;
-      const found = await Promise.all(spaces.map((s) => attempt(() => roomFor(acct, s))));
-      rooms = found.filter((r): r is Room => !!r);
-    }
-    refreshedAt = Date.now();
-    const saved = loadState(slug).cursors ?? {};
-    for (const room of rooms) {
-      if (cursors.has(room.channelId)) continue;
-      const known = opts.since ?? saved[room.channelId];
-      const cursor = known ?? await attempt(() => latestSeqOf(acct.http, room.channelId));
-      if (cursor === undefined) continue;
-      cursors.set(room.channelId, cursor);
-      if (saved[room.channelId] === undefined) advanceCursor(slug, room.channelId, cursor);
-    }
-    const savedSystem = loadState(slug).systemCursors ?? {};
-    for (const room of rooms) {
-      if (systemCursors.has(room.channelId)) continue;
-      const known = savedSystem[room.channelId];
-      if (known !== undefined) {
-        systemCursors.set(room.channelId, known);
-        continue;
-      }
-      const baseline = await attempt(() => fetchSystemRows(acct.http, room));
-      if (!baseline) continue;
-      systemCursors.set(room.channelId, baseline.cursor);
-      setSystemCursor(slug, room.channelId, baseline.cursor);
-    }
-    return true;
-  };
-
-  const handed = new Map<string, number>();
-  const heartbeat = setInterval(() => void reportPresence(acct), PRESENCE_HEARTBEAT_MS);
-  void dl.soft(reportPresence(acct), undefined);
-  try {
-    for (;;) {
-      if (!refreshedAt || Date.now() - refreshedAt > WAIT_SPACE_REFRESH_MS) await refreshRooms();
-      const groups: RoomMessages[] = [];
-      let failures = 0;
-      let polled = 0;
-      for (const room of rooms) {
-        const cursor = cursors.get(room.channelId);
-        if (cursor === undefined) continue;
-        if (groups.length && dl.expired()) break;
-        polled += 1;
-        let got: Awaited<ReturnType<typeof fetchSince>> | undefined;
-        try {
-          got = await attempt(() => fetchSince(acct.http, room.channelId, cursor));
-        } catch (e) {
-          if (e instanceof DeadlineReached && groups.length) break;
-          throw e;
-        }
-        let fresh: Row[] = [];
-        if (!got) {
-          failures += 1;
-        } else if (got.maxSeq > cursor && storeRows(slug, room.channelId, got.rows)) {
-          cursors.set(room.channelId, got.maxSeq);
-          fresh = got.rows.filter((r) => r.sender !== slug && !r.system);
-          ackRows(acct.http, fresh, slug);
-          if (fresh.length) handed.set(room.channelId, got.maxSeq);
-          else advanceCursor(slug, room.channelId, got.maxSeq);
-        }
-        const systemCursor = systemCursors.get(room.channelId);
-        let joined: Row[] = [];
-        if (systemCursor !== undefined) {
-          let events: Awaited<ReturnType<typeof fetchSystemRows>> | undefined;
-          try {
-            events = await attempt(() => fetchSystemRows(acct.http, room, systemCursor));
-          } catch (e) {
-            if (!(e instanceof DeadlineReached) || !(groups.length || fresh.length)) throw e;
-          }
-          if (events && !sameCursor(events.cursor, systemCursor)) {
-            systemCursors.set(room.channelId, events.cursor);
-            setSystemCursor(slug, room.channelId, events.cursor);
-            joined = events.rows.filter((r) => r.sender !== slug);
-          }
-        }
-        if (fresh.length || joined.length) groups.push({ room, rows: mergeByTime(fresh, joined) });
-        if (!groups.length) await dl.sleep(WAIT_CYCLE_MS / Math.max(1, rooms.length));
-      }
-      if (groups.length) {
-        clearInterval(heartbeat);
-        for (const [channelId, seq] of handed) advanceCursor(slug, channelId, seq);
-        const names = await dl.soft(resolveNames(acct, groups.flatMap((g) => g.rows)), cachedNames());
-        const batch: MessageBatch = { groups, names, synced: true };
-        return dl.soft(attachParents(acct, batch), batch);
-      }
-      if (polled > 0 && failures === 0 && polled === rooms.length) synced = true;
-      const cycleFailed = lastFailed && (polled === 0 || failures === polled);
-      failedCycles = cycleFailed ? failedCycles + 1 : 0;
-      if (failedCycles >= 2) throw networkError();
-      if (!polled) await dl.sleep(WAIT_CYCLE_MS);
-      if (dl.expired()) throw new DeadlineReached();
-    }
-  } catch (e) {
-    if (e instanceof DeadlineReached) {
-      if (lastFailed && !everOk) throw networkError();
-      return emptyBatch(synced);
-    }
-    throw e;
-  } finally {
-    clearInterval(heartbeat);
-  }
+export function emptyBatch(): MessageBatch {
+  return { groups: [], names: {} };
 }
 
 const ago = (ms: number) => {
@@ -1209,31 +957,21 @@ export async function members(ctx: Ctx, roomArg?: string) {
   const room = await currentRoom(acct, roomArg);
   const roster = await fetchSpaceMembers(acct.http, room.spaceId);
   const slugs = roster.map((m) => m.slug);
-  const [presence, pairs, names] = await Promise.all([
-    readPresence(acct, slugs).catch(() => null),
-    soft<Record<string, string>>(fetchPairs(acct.http, slugs), {}),
-    (async () => {
-      const found: Record<string, string> = {};
-      for (const p of await fetchProfiles(acct.http, slugs).catch(() => [])) if (p.display_name) found[p.slug] = p.display_name;
-      rememberNames(found);
-      return { ...cachedNames(), ...found };
-    })(),
-  ]);
-  const items = roster.map((m) => {
-    const p = presence?.[m.slug];
-    return {
-      slug: m.slug,
-      name: names[m.slug] ?? null,
-      identity_type: memberType(m.slug, m.identity_type, pairs),
-      role: m.role,
-      state: p?.state ?? "unknown",
-      self: m.slug === acct.identity.slug,
-    };
-  });
+  const found: Record<string, string> = {};
+  for (const p of await fetchProfiles(acct.http, slugs).catch(() => [])) if (p.display_name) found[p.slug] = p.display_name;
+  rememberNames(found);
+  const names: Record<string, string> = { ...cachedNames(), ...found };
+  const items = roster.map((m) => ({
+    slug: m.slug,
+    name: names[m.slug] ?? null,
+    role: m.role,
+    self: m.slug === acct.identity.slug,
+  }));
   return {
     json: items,
     text: items
-      .map((i) => `${nameAndSlug(i.name, i.slug)} [${i.identity_type ?? "?"},${i.role}] ${i.state}${i.self ? " (you)" : ""}`)
+      .map((i) => `${nameAndSlug(i.name, i.slug)} [${i.role}]${i.self ? " (you)" : ""}`)
+      .map(safeLine)
       .join("\n"),
   };
 }
@@ -1245,12 +983,15 @@ function readFileArg(path: string): Uint8Array<ArrayBuffer> {
 
 export async function send(
   ctx: Ctx,
-  opts: { text?: string; room?: string; replyTo?: string; files?: string[]; mentions?: string[]; options?: OptionInput[]; form?: unknown; extra?: Record<string, unknown> },
+  opts: { text?: string; room?: string; replyTo?: string; files?: string[]; mentions?: string[]; options?: OptionInput[]; form?: unknown; quote?: QuoteInput | null; extra?: Record<string, unknown> },
 ) {
   if (!opts.replyTo && opts.text) opts = { ...opts, ...splitTrailingReplyTo(opts.text) };
   const files = opts.files ?? [];
   const rich = richContent(opts.text, opts.options, opts.form);
   const mentions = opts.mentions ?? [];
+  const quoteIn = opts.quote ?? null;
+  if (quoteIn && opts.replyTo) throw new UserError("a message quotes one thing: give a quote or a reply-to, not both");
+  if (quoteIn && !opts.text?.trim()) throw new UserError(QUOTE_NEEDS_TEXT);
   if (!opts.text?.length && files.length === 0 && mentions.length === 0) throw new UserError("nothing to send: give text and/or files");
   if (files.length > MAX_ATTACHMENTS_PER_MESSAGE) throw new UserError(`up to ${MAX_ATTACHMENTS_PER_MESSAGE} files per message`);
   const acct = account(ctx);
@@ -1263,44 +1004,68 @@ export async function send(
     }
     opts = { ...opts, text: [tags.join(" "), opts.text ?? ""].filter(Boolean).join(" ") };
   }
+  if (quoteIn) opts = { ...opts, extra: { ...opts.extra, quotes: [await roomQuote(acct, room, quoteIn)] } };
   const attachments: AttachmentMeta[] = [];
   for (const path of files) attachments.push(await uploadFileArg(ctx.rt.crypto, acct.http, path));
   const body = opts.text ?? "";
   const preview = attachments.length || rich || opts.extra ? null : await linkPreview(body, (file) => encryptAndUploadAttachment(ctx.rt.crypto, acct.http, file));
-  const structured = attachments.length || rich || preview;
-  const envelope = channelEnvelope(
-    ctx,
-    await eventSigner(ctx.rt, acct),
-    room,
-    structured ? ATTACHMENT_CONTENT_TYPE : "text/plain",
-    structured
-      ? { text: body, attachments, ...rich, ...(preview ? { preview } : {}), ...opts.extra }
-      : opts.extra ? { text: body, ...opts.extra } : body,
-    opts.replyTo,
+  const structured = attachments.length || rich || preview || quoteIn;
+  const posted = await postWithLimits(() =>
+    postToRoom(
+      room,
+      structured ? ATTACHMENT_CONTENT_TYPE : "text/plain",
+      structured
+        ? { text: body, attachments, ...rich, ...(preview ? { preview } : {}), ...opts.extra }
+        : opts.extra ? { text: body, ...opts.extra } : body,
+      opts.replyTo,
+    ),
   );
-  const posted = await postWithLimits(acct, envelope);
   return {
     json: {
-      id: envelope.envelope_id,
+      id: posted.id,
       seq: posted.seq ?? null,
       spaceId: room.spaceId,
-      channelId: room.channelId,
       room: room.name,
       attachments: attachments.map((a) => a.filename),
     },
-    text: `sent ${envelope.envelope_id}${posted.seq ? ` (#${posted.seq})` : ""} to "${room.name}" (${room.spaceId})`,
+    text: `sent ${posted.id}${posted.seq ? ` (#${posted.seq})` : ""} to "${room.name}" (${room.spaceId})`,
   };
 }
 
 const SLOW_MODE_AUTO_WAIT_MS = 10_000;
 
-async function postWithLimits(acct: Account, envelope: Parameters<typeof postMessageEnvelope>[1]) {
+type Posted = { id: string; seq: number | null };
+
+/** The server's refusal, from a direct request or from core, which reports it as `http_status_<n> body=<body>`. */
+export function rejection(e: unknown): { status: number; body: string } | null {
+  if (e instanceof HttpError) return { status: e.status, body: e.body };
+  const found = /http_status_(\d{3})(?: reason=\S+)?(?: body=([\s\S]*))?$/.exec(errorText(e));
+  return found ? { status: Number(found[1]), body: found[2] ?? "" } : null;
+}
+
+/** Space and invite events are signed in core with the account's subkey. */
+const coreSigner = async () => (await awaitCoreSpaceEvents()).signer();
+
+/** Core signs and sends; the idempotency key keeps a retried post one message. */
+async function postToRoom(room: Pick<Room, "spaceId" | "channelId">, contentType: string, content: unknown, replyTo?: string): Promise<Posted> {
+  const sender = await awaitCoreMessageSender();
+  const stored = await sender.send({
+    target: { kind: "channel", spaceId: room.spaceId, channelId: room.channelId },
+    contentType,
+    content,
+    idempotencyKey: `cli_${randomUUID()}`,
+    replyToId: replyTo || undefined,
+  });
+  return { id: stored.envelope_id, seq: stored.seq ?? null };
+}
+
+async function postWithLimits(post: () => Promise<Posted>): Promise<Posted> {
   for (let attempt = 0; ; attempt++) {
     try {
-      return await postMessageEnvelope(acct.http, envelope);
+      return await post();
     } catch (e) {
-      if (e instanceof HttpError && e.status === 400 && e.body.toLowerCase().includes("is encrypted")) {
-        throw new UserError("this channel is end-to-end encrypted; huddo only posts to plaintext (Huddo) channels");
+      if (errorText(e).toLowerCase().includes("is encrypted")) {
+        throw new UserError("this room is end-to-end encrypted; huddo posts only to Huddo rooms, which are not");
       }
       const limit = sendLimitError(e);
       if (limit?.kind === "slow_mode" && attempt < 2 && limit.retryAfterMs <= SLOW_MODE_AUTO_WAIT_MS) {
@@ -1320,36 +1085,26 @@ export async function react(ctx: Ctx, opts: { message?: string; emoji?: string; 
   if (!emoji || /\s/.test(emoji)) throw new UserError("react needs one emoji, e.g. 👍");
   const acct = account(ctx);
   const room = await currentRoom(acct, opts.room);
-  const signer = await eventSigner(ctx.rt, acct);
-  const envelope = buildPlaintextMessage(ctx.rt.crypto, signer.subkeySecretKey, {
-    envelope_kind: "channel",
-    sender_slug: signer.slug,
-    sender_subkey_id: signer.subkeyId,
-    space_id: room.spaceId,
-    channel_id: room.channelId,
-    content_type: REACTION_CONTENT_TYPE,
-    content: reactionContent(message, emoji, !opts.remove),
-    recipients: [],
-  });
-  const posted = await postWithLimits(acct, envelope);
+  const posted = await postWithLimits(() => postToRoom(room, REACTION_CONTENT_TYPE, reactionContent(message, emoji, !opts.remove)));
   return {
-    json: { id: envelope.envelope_id, seq: posted.seq ?? null, spaceId: room.spaceId, channelId: room.channelId, room: room.name, message, emoji, removed: Boolean(opts.remove) },
+    json: { id: posted.id, seq: posted.seq ?? null, spaceId: room.spaceId, room: room.name, message, emoji, removed: Boolean(opts.remove) },
     text: `${opts.remove ? "removed" : "reacted"} ${emoji} ${opts.remove ? "from" : "to"} ${message} in "${room.name}" (${room.spaceId})`,
   };
 }
 
-async function postRevision(acct: Account, envelope: Parameters<typeof postMessageEnvelope>[1]) {
+async function postRevision(post: () => Promise<Posted>): Promise<Posted> {
   try {
-    return await postWithLimits(acct, envelope);
+    return await postWithLimits(post);
   } catch (e) {
     const known = revisionError(e);
     if (known) throw new UserError(known);
-    if (e instanceof HttpError && [400, 403, 410].includes(e.status)) {
-      let message = e.body;
+    const refused = rejection(e);
+    if (refused && [400, 403, 410].includes(refused.status)) {
+      let message = refused.body;
       try {
-        message = (JSON.parse(e.body) as { message?: string }).message ?? e.body;
+        message = (JSON.parse(refused.body) as { message?: string }).message ?? refused.body;
       } catch {
-        message = e.body;
+        message = refused.body;
       }
       throw new UserError(message.slice(0, 500));
     }
@@ -1364,46 +1119,24 @@ export async function edit(ctx: Ctx, opts: { message?: string; text?: string; ro
   if (!text) throw new UserError("edit needs the new text");
   const acct = account(ctx);
   const room = await currentRoom(acct, opts.room);
-  const original = (await fetchRows(acct.http, room.channelId, PARENT_LOOKUP_LIMIT)).find((r) => r.id === message);
+  const original = (await recentRows(room.channelId, PARENT_LOOKUP_LIMIT)).find((r) => r.id === message);
   if (original && original.sender !== acct.identity.slug) throw new UserError("you can only edit your own messages");
-  const signer = await eventSigner(ctx.rt, acct);
   let contentType = EDIT_CONTENT_TYPE;
   let content: unknown = editContent(message, text);
   if (original?.whisper) {
     const to = original.whisper.to;
     const devices = await fetchRecipientDevices(acct.http, ctx.rt.crypto, [to, acct.identity.slug]);
     if (!devices.some((d) => d.slug === to)) throw new UserError(`${to} has no active device to whisper to`);
-    const sealed = sealWhisper(ctx.rt.crypto, { spaceId: room.spaceId, channelId: room.channelId, sender: signer.slug, to }, text, devices);
+    const body = { text, ...(original.quote ? { quote: original.quote } : {}), ...(original.attachments.length ? { attachments: original.attachments } : {}) };
+    const sealed = sealWhisper(ctx.rt.crypto, { spaceId: room.spaceId, channelId: room.channelId, sender: acct.identity.slug, to }, body, devices);
     contentType = WHISPER_CONTENT_TYPE;
     content = whisperEditContent(sealed, message);
   }
-  const envelope = channelEnvelope(ctx, signer, room, contentType, content);
-  const posted = await postRevision(acct, envelope);
+  const posted = await postRevision(() => postToRoom(room, contentType, content));
   return {
-    json: { id: envelope.envelope_id, seq: posted.seq ?? null, spaceId: room.spaceId, channelId: room.channelId, room: room.name, message, whisper: Boolean(original?.whisper) },
+    json: { id: posted.id, seq: posted.seq ?? null, spaceId: room.spaceId, room: room.name, message, whisper: Boolean(original?.whisper) },
     text: `edited ${message}${original?.whisper ? " (whisper)" : ""} in "${room.name}" (${room.spaceId})`,
   };
-}
-
-function channelEnvelope(
-  ctx: Ctx,
-  signer: Awaited<ReturnType<typeof eventSigner>>,
-  room: { spaceId: string; channelId: string },
-  contentType: string,
-  content: unknown,
-  replyTo?: string,
-) {
-  return buildPlaintextMessage(ctx.rt.crypto, signer.subkeySecretKey, {
-    envelope_kind: "channel",
-    sender_slug: signer.slug,
-    sender_subkey_id: signer.subkeyId,
-    space_id: room.spaceId,
-    channel_id: room.channelId,
-    content_type: contentType,
-    content,
-    recipients: [],
-    reply_to_id: replyTo || undefined,
-  });
 }
 
 async function postAbout(
@@ -1419,10 +1152,9 @@ async function postAbout(
   if (!message) throw new UserError(usage);
   const acct = account(ctx);
   const room = await currentRoom(acct, opts.room);
-  const envelope = channelEnvelope(ctx, await eventSigner(ctx.rt, acct), room, contentType, content(message));
-  const posted = await post(acct, envelope);
+  const posted = await post(() => postToRoom(room, contentType, content(message)));
   return {
-    json: { id: envelope.envelope_id, seq: posted.seq ?? null, spaceId: room.spaceId, channelId: room.channelId, room: room.name, message },
+    json: { id: posted.id, seq: posted.seq ?? null, spaceId: room.spaceId, room: room.name, message },
     text: `${done} ${message} in "${room.name}" (${room.spaceId})`,
   };
 }
@@ -1438,28 +1170,14 @@ export async function answer(ctx: Ctx, opts: { message?: string; room?: string }
   if (!message) throw new UserError("answer needs the id (msg_...) of a message with options or a form");
   const acct = account(ctx);
   const room = await currentRoom(acct, opts.room);
-  const content = answerContent(await fetchRows(acct.http, room.channelId, PARENT_LOOKUP_LIMIT), message, opts);
-  const envelope = channelEnvelope(ctx, await eventSigner(ctx.rt, acct), room, ATTACHMENT_CONTENT_TYPE, content, message);
-  const posted = await postWithLimits(acct, envelope);
-  return { json: { id: envelope.envelope_id, seq: posted.seq ?? null, room: room.name, message }, text: `answered ${message} in "${room.name}" (${room.spaceId})` };
+  const content = answerContent(await recentRows(room.channelId, PARENT_LOOKUP_LIMIT), message, opts);
+  const posted = await postWithLimits(() => postToRoom(room, ATTACHMENT_CONTENT_TYPE, content, message));
+  return { json: { id: posted.id, seq: posted.seq ?? null, room: room.name, message }, text: `answered ${message} in "${room.name}" (${room.spaceId})` };
 }
 
 function appFail(err: unknown): never {
   const e = toAppError(err);
   throw new UserError(`${e.code}: ${e.message}`);
-}
-
-function parseOnOff(flag: string, value: string | undefined): boolean | undefined {
-  if (value === undefined) return undefined;
-  if (value === "on") return true;
-  if (value === "off") return false;
-  throw new UserError(`${flag} must be on or off`);
-}
-
-function parseWrite(value: string | undefined): "members" | "owner" | undefined {
-  if (value === undefined) return undefined;
-  if (value !== "members" && value !== "owner") throw new UserError("--write must be members or owner");
-  return value;
 }
 
 function readJsonArg(raw: string, what: string): unknown {
@@ -1470,70 +1188,17 @@ function readJsonArg(raw: string, what: string): unknown {
   }
 }
 
-export async function publish(
-  ctx: Ctx,
-  opts: {
-    app?: string;
-    file?: string;
-    name?: string;
-    description?: string;
-    guide?: string;
-    guideFile?: string;
-    stateFile?: string;
-    schema?: string;
-    writeAccess?: string;
-    banner?: string;
-    enabled?: boolean;
-    reset?: boolean;
-    room?: string;
-  },
-) {
-  const appId = opts.app?.trim() ?? "";
-  if (!appId) throw new UserError("app publish needs an app id, e.g. tasks");
-  if (!opts.file) throw new UserError("app publish needs --file app.html (one self-contained HTML file)");
-  const schema = Number(opts.schema ?? "1");
-  if (!Number.isInteger(schema) || schema < 1) throw new UserError("--schema must be a whole number from 1");
-  const decode = (path: string) => new TextDecoder().decode(readFileArg(path));
-  const guide = opts.guideFile ? decode(opts.guideFile) : opts.guide;
-  const initial = opts.stateFile ? readJsonArg(decode(opts.stateFile), "--state-file") : undefined;
-  if (initial !== undefined && (!initial || typeof initial !== "object" || Array.isArray(initial))) throw new UserError("--state-file must hold a JSON object");
-  const writeAccess = parseWrite(opts.writeAccess);
-  const banner = parseOnOff("--banner", opts.banner);
-  const acct = account(ctx);
-  const room = await currentRoom(acct, opts.room);
-  try {
-    const meta = await publishApp(acct.http, room.spaceId, appId, {
-      name: opts.name ?? appId,
-      schema_version: schema,
-      code: decode(opts.file),
-      ...(opts.description !== undefined ? { description: opts.description } : {}),
-      ...(guide !== undefined ? { guide } : {}),
-      ...(initial !== undefined ? { initial_state: initial as Record<string, unknown> } : {}),
-      ...(writeAccess ? { write_access: writeAccess } : {}),
-      ...(banner !== undefined ? { banner } : {}),
-      ...(opts.enabled !== undefined ? { enabled: opts.enabled } : {}),
-      ...(opts.reset ? { reset_state: true } : {}),
-    });
-    return {
-      json: { spaceId: room.spaceId, ...meta },
-      text: `published ${meta.app_id} v${meta.version} (schema ${meta.schema_version}, revision ${meta.revision}, ${meta.enabled ? "on" : "off"}${meta.banner ? ", banner" : ""}) in "${room.name}"`,
-    };
-  } catch (err) {
-    appFail(err);
-  }
-}
-
 export async function apps(ctx: Ctx, opts: { app?: string; room?: string }) {
   const acct = account(ctx);
   const room = await currentRoom(acct, opts.room);
   try {
     if (opts.app) {
       const [snap, list] = await Promise.all([getAppState(acct.http, room.spaceId, opts.app), listApps(acct.http, room.spaceId)]);
-      const meta = list.find((a) => a.app_id === opts.app);
+      const meta = list.find((a) => a.app_id === snap.app_id);
       const head = meta
-        ? `${meta.name} (${meta.app_id}) v${snap.version} schema ${snap.schema_version} revision ${snap.revision}${meta.description ? `\n${meta.description}` : ""}`
+        ? `${safeLine(meta.name)} (${meta.app_id}) v${snap.version} schema ${snap.schema_version} revision ${snap.revision}${meta.description ? `\n${safeLine(meta.description)}` : ""}`
         : `${opts.app} revision ${snap.revision}`;
-      const guide = meta?.guide ? `\n\nguide:\n${meta.guide}` : "";
+      const guide = meta?.guide ? `\n\nguide:\n${neutralizeTags(meta.guide)}` : "";
       return {
         json: { spaceId: room.spaceId, ...snap, name: meta?.name ?? null, description: meta?.description ?? "", guide: meta?.guide ?? "" },
         text: `${head}${guide}\n\nstate:\n${JSON.stringify(snap.state, null, 2)}`,
@@ -1544,7 +1209,8 @@ export async function apps(ctx: Ctx, opts: { app?: string; room?: string }) {
       json: { spaceId: room.spaceId, apps: list },
       text: list.length
         ? list
-            .map((a) => `${a.app_id}  ${a.name}  v${a.version}  revision ${a.revision}  ${a.enabled ? "on" : "off"}${a.banner ? "  banner" : ""}  write: ${a.write_access}${a.description ? `\n    ${a.description}` : ""}`)
+            .map((a) => `${a.app_id}  ${a.name}  v${a.version}  revision ${a.revision}  ${a.enabled ? "on" : "off"}  write: ${a.write_access}${a.description ? `\n    ${a.description}` : ""}`)
+            .map(safeLine)
             .join("\n")
         : `"${room.name}" has no apps`,
     };
@@ -1581,29 +1247,6 @@ export async function appSubmit(ctx: Ctx, opts: { app?: string; ops?: string; ex
   }
 }
 
-export async function appSettings(ctx: Ctx, opts: { app?: string; enabled?: boolean; banner?: string; writeAccess?: string; room?: string }) {
-  const appId = opts.app?.trim() ?? "";
-  if (!appId) throw new UserError("app set needs an app id");
-  const banner = parseOnOff("--banner", opts.banner);
-  const writeAccess = parseWrite(opts.writeAccess);
-  if (opts.enabled === undefined && banner === undefined && !writeAccess) throw new UserError("app set needs --on, --off, --banner on|off or --write members|owner");
-  const acct = account(ctx);
-  const room = await currentRoom(acct, opts.room);
-  try {
-    const meta = await updateAppSettings(acct.http, room.spaceId, appId, {
-      ...(opts.enabled !== undefined ? { enabled: opts.enabled } : {}),
-      ...(banner !== undefined ? { banner } : {}),
-      ...(writeAccess ? { write_access: writeAccess } : {}),
-    });
-    return {
-      json: { spaceId: room.spaceId, ...meta },
-      text: `${meta.app_id}: ${meta.enabled ? "on" : "off"}, banner ${meta.banner ? "on" : "off"}, write: ${meta.write_access} in "${room.name}"`,
-    };
-  } catch (err) {
-    appFail(err);
-  }
-}
-
 export async function appDelete(ctx: Ctx, opts: { app?: string; room?: string }) {
   const appId = opts.app?.trim() ?? "";
   if (!appId) throw new UserError("app delete needs an app id");
@@ -1617,10 +1260,29 @@ export async function appDelete(ctx: Ctx, opts: { app?: string; room?: string })
   }
 }
 
-export async function whisper(ctx: Ctx, opts: { text?: string; to?: string; room?: string; replyTo?: string }) {
+/** The one quote a message or a whisper carries, from the room's apps and the files stored for it, newest first. */
+async function roomQuote(acct: Account, room: Room, input: QuoteInput): Promise<MessageQuote> {
+  const stored = async () => (await storedRooms(acct, room.spaceId)).stored.flatMap((s) => s.rows);
+  const rows = async (whispers: boolean) =>
+    (await stored()).filter((r) => Boolean(r.whisper) === whispers).sort((a, b) => b.sentAt - a.sentAt).flatMap((r) => r.attachments);
+  return buildQuote(input, {
+    apps: () => listApps(acct.http, room.spaceId).catch(appFail),
+    files: () => rows(false),
+    whisperFiles: () => rows(true),
+    message: async (id) => {
+      const row = (await stored()).find((r) => r.id === id);
+      return row ? { whisper: Boolean(row.whisper), text: row.text } : null;
+    },
+  });
+}
+
+export async function whisper(ctx: Ctx, opts: { text?: string; to?: string; room?: string; replyTo?: string; quote?: QuoteInput | null; files?: string[] }) {
   const text = opts.text?.trim() ?? "";
+  const files = opts.files ?? [];
   if (!text) throw new UserError("nothing to whisper: give the text");
   if (!opts.to) throw new UserError("whisper needs --to <slug or name>");
+  if (opts.quote && opts.replyTo) throw new UserError("a message quotes one thing: give a quote or a reply-to, not both");
+  if (files.length > MAX_ATTACHMENTS_PER_MESSAGE) throw new UserError(`up to ${MAX_ATTACHMENTS_PER_MESSAGE} files per message`);
   const acct = account(ctx);
   const room = await currentRoom(acct, opts.room);
   const member = await resolveMember(acct, room.spaceId, opts.to);
@@ -1630,29 +1292,21 @@ export async function whisper(ctx: Ctx, opts: { text?: string; to?: string; room
   if (chars > maxChars) throw new UserError(`message is ${chars} characters; this huddo allows at most ${maxChars}`);
   const devices = await fetchRecipientDevices(acct.http, ctx.rt.crypto, [member.slug, acct.identity.slug]);
   if (!devices.some((d) => d.slug === member.slug)) throw new UserError(`${opts.to} has no active device to whisper to`);
-  const signer = await eventSigner(ctx.rt, acct);
+  // The quote is sealed with the text, so only the two of you see what it quotes.
+  const quote = opts.quote ? await roomQuote(acct, room, opts.quote) : undefined;
+  const attachments: AttachmentMeta[] = [];
+  for (const path of files) attachments.push(await uploadFileArg(ctx.rt.crypto, acct.http, path));
   const content = sealWhisper(
     ctx.rt.crypto,
-    { spaceId: room.spaceId, channelId: room.channelId, sender: signer.slug, to: member.slug },
-    text,
+    { spaceId: room.spaceId, channelId: room.channelId, sender: acct.identity.slug, to: member.slug },
+    { text, ...(quote ? { quote } : {}), ...(attachments.length ? { attachments } : {}) },
     devices,
   );
-  const envelope = buildPlaintextMessage(ctx.rt.crypto, signer.subkeySecretKey, {
-    envelope_kind: "channel",
-    sender_slug: signer.slug,
-    sender_subkey_id: signer.subkeyId,
-    space_id: room.spaceId,
-    channel_id: room.channelId,
-    content_type: WHISPER_CONTENT_TYPE,
-    content,
-    recipients: [],
-    reply_to_id: opts.replyTo || undefined,
-  });
-  const posted = await postWithLimits(acct, envelope);
+  const posted = await postWithLimits(() => postToRoom(room, WHISPER_CONTENT_TYPE, content, opts.replyTo));
   const label = nameAndSlug(member.name, member.slug);
   return {
-    json: { id: envelope.envelope_id, seq: posted.seq ?? null, spaceId: room.spaceId, channelId: room.channelId, room: room.name, to: member.slug },
-    text: `whispered ${envelope.envelope_id}${posted.seq ? ` (#${posted.seq})` : ""} to ${label} in "${room.name}" (${room.spaceId})`,
+    json: { id: posted.id, seq: posted.seq ?? null, spaceId: room.spaceId, room: room.name, to: member.slug, attachments: attachments.map((a) => a.filename) },
+    text: `whispered ${posted.id}${posted.seq ? ` (#${posted.seq})` : ""} to ${label} in "${room.name}" (${room.spaceId})`,
   };
 }
 
@@ -1675,9 +1329,9 @@ export async function kick(ctx: Ctx, who: string, roomArg?: string) {
   const member = await resolveMember(acct, room.spaceId, who);
   if (member.slug === acct.identity.slug) throw new UserError("you cannot remove yourself; an owner archives the huddo instead");
   try {
-    await removeFromSpace(acct.http, ctx.rt.crypto, await eventSigner(ctx.rt, acct), room.spaceId, member.slug);
+    await (await awaitCoreSpaceEvents()).submit([removeEvent(room.spaceId, member.slug, nonceFrom(ctx.rt.crypto))]);
   } catch (e) {
-    if (e instanceof HttpError && e.status === 403) throw new UserError(`only the owner of "${room.name}" or someone paired with them can remove members`);
+    if (rejection(e)?.status === 403) throw new UserError(`only the owner of "${room.name}" or someone paired with them can remove members`);
     throw e;
   }
   const label = nameAndSlug(member.name, member.slug);
@@ -1739,7 +1393,7 @@ export async function limits(ctx: Ctx, opts: { slow?: string; maxChars?: string;
   };
 }
 
-function writeNewFile(dir: string, name: string, bytes: Uint8Array): string {
+export function writeNewFile(dir: string, name: string, bytes: Uint8Array | string): string {
   const dot = name.lastIndexOf(".");
   const stem = dot > 0 ? name.slice(0, dot) : name;
   const ext = dot > 0 ? name.slice(dot) : "";
@@ -1759,20 +1413,20 @@ export async function download(ctx: Ctx, id: string, opts: { room?: string; outD
   const room = await currentRoom(acct, opts.room);
   const slug = acct.identity.slug;
   const row = mergeRevisions(await storedUntil(acct, room, (all) => all.some((r) => r.id === id), FIND_PAGES)).find((r) => r.id === id);
-  if (!row) throw notFound(id, room, slug);
+  if (!row) throw await notFound(id, room);
   if (!row.attachments.length) throw new UserError(`message ${id} has no attachments`);
   const dir = opts.outDir ?? joinPath(homeDir(), "downloads");
   mkdirSync(dir, { recursive: true });
   const saved: string[] = [];
   for (const a of row.attachments) {
     if (isStreamedAttachment(a)) {
-      saved.push(await saveStreamedAttachment(ctx.rt.crypto, acct.http, a, writeNewFile(dir, basename(a.filename || a.blob_id), new Uint8Array(0))));
+      saved.push(await saveStreamedAttachment(ctx.rt.crypto, acct.http, a, writeNewFile(dir, basename(oneLine(a.filename || a.blob_id)), new Uint8Array(0))));
       continue;
     }
     const hit = cachedFile(slug, a.blob_id);
     const bytes = hit ? readFileSync(hit) : await downloadAndDecryptAttachment(ctx.rt.crypto, acct.http, a);
     if (!hit) cacheFile(slug, a.blob_id, bytes);
-    saved.push(writeNewFile(dir, basename(a.filename || a.blob_id), bytes));
+    saved.push(writeNewFile(dir, basename(oneLine(a.filename || a.blob_id)), bytes));
   }
   return { json: saved, text: saved.join("\n") };
 }
@@ -1819,8 +1473,89 @@ export async function identityList() {
 }
 
 export async function identityNew(ctx: Ctx, name?: string) {
-  const acct = await createIdentity(ctx.rt, name);
-  return { json: { slug: acct.identity.slug, active: true }, text: `created ${acct.identity.slug} (now active)` };
+  const { acct, backup } = await createIdentity(ctx.rt, name);
+  return { json: { slug: acct.identity.slug, active: true, ...backup.json }, text: `created ${acct.identity.slug} (now active)${backup.text}` };
+}
+
+const NO_BACKUP = { json: {}, text: "" };
+
+function withBackup<T extends object>(backup: { json: object; text: string }, result: { json: T; text: string }) {
+  return { json: { ...result.json, ...backup.json }, text: result.text + backup.text };
+}
+
+type SignupBackup = { json: { backup_key: string | null; backup_hint?: string }; text: string };
+
+/** The backup the server made in this run's signup; an error after the signup still shows it. */
+let signupBackup: SignupBackup | null = null;
+
+export function signupBackupNote(): string {
+  return signupBackup?.text ?? "";
+}
+
+function backupResult(key: string | undefined): SignupBackup {
+  return key
+    ? { json: { backup_key: key, backup_hint: keepKeyHintFor(key) }, text: `\nrecovery code: ${key}\n${keepKeyHintFor(key)}` }
+    : { json: { backup_key: null }, text: "\nnote: the server made no backup at signup; run `huddo backup create` to make one." };
+}
+
+export async function backupCommand(ctx: Ctx, sub: string | undefined, key: string | undefined) {
+  const withKey = (run: (k: string) => Promise<{ json: unknown; text: string }>) => {
+    if (!key) throw new UserError(`usage: huddo backup ${sub} --key <code>`);
+    return run(key);
+  };
+  switch (sub) {
+    case "create": return backupCreate(ctx);
+    case "status": return backupStatusCmd(ctx);
+    case "remove": return withKey((k) => backupRemove(ctx, k));
+    case "recover": return withKey((k) => backupRecover(ctx, k));
+    default: throw new UserError(`unknown backup command "${sub ?? ""}" (see huddo --help)`);
+  }
+}
+
+export async function backupCreate(ctx: Ctx) {
+  const acct = account(ctx);
+  const key = await createBackup(acct).catch((e: unknown) => {
+    if (e instanceof HttpError && e.status === 409) {
+      throw new UserError("this identity already has 5 backups; remove one with `huddo backup remove --key <code>` first");
+    }
+    throw e;
+  });
+  return {
+    json: { slug: acct.identity.slug, backup_key: key, backup_hint: keepKeyHintFor(key) },
+    text: `recovery code for ${acct.identity.slug}: ${key}\n${keepKeyHintFor(key)}\n${EARLIER_KEYS_WORK}`,
+  };
+}
+
+export async function backupStatusCmd(ctx: Ctx) {
+  const acct = account(ctx);
+  const made = (await backupStatus(acct)).map((b) => new Date(b.created_at_ms).toISOString());
+  return {
+    json: { slug: acct.identity.slug, backups: made.map((created_at) => ({ created_at })) },
+    text: made.length
+      ? `${acct.identity.slug} has ${made.length} backup${made.length === 1 ? "" : "s"}, made ${made.join(", ")}`
+      : `no backup for ${acct.identity.slug}; run \`huddo backup create\``,
+  };
+}
+
+function keyError(e: unknown): never {
+  if (e instanceof BackupKeyError || e instanceof BackupImportError) throw new UserError(e.message);
+  throw e;
+}
+
+export async function backupRemove(ctx: Ctx, key: string) {
+  const slug = await removeBackup(ctx.rt.http(), key).catch(keyError);
+  return { json: { slug, removed: true }, text: `removed a backup of ${slug}; its recovery code no longer works` };
+}
+
+export async function backupRecover(ctx: Ctx, key: string) {
+  const stored = await openBackup(ctx.rt.http(), key).catch(keyError);
+  const identity = await registerNewDevice(stored, ctx.rt.crypto);
+  await ctx.rt.keyStore.saveIdentity(identity);
+  updateConfig((c) => {
+    c.active = identity.slug;
+  });
+  await accountFor(ctx.rt, identity.slug).http.ensureAccountSubkey();
+  return { json: { slug: identity.slug, active: true }, text: `recovered ${identity.slug} on this device (now active); the recovery code still works` };
 }
 
 export async function identityUse(slug: string) {
@@ -1834,8 +1569,8 @@ export async function identityUse(slug: string) {
 async function profileTarget(acct: Account, forOperator: boolean | undefined): Promise<{ slug: string; whose: string }> {
   if (!forOperator) return { slug: acct.identity.slug, whose: "" };
   const operator = (await fetchPairs(acct.http, [acct.identity.slug]))[acct.identity.slug];
-  if (!operator) throw new UserError("you are not paired with an operator; run `huddo pair` first");
-  return { slug: operator, whose: "your operator's " };
+  if (!operator) throw new UserError("you are not paired with a person; run `huddo pair` first");
+  return { slug: operator, whose: "the paired person's " };
 }
 
 async function saveProfile(acct: Account, slug: string, patch: { display_name?: string; avatar_url?: string }) {
@@ -1843,7 +1578,7 @@ async function saveProfile(acct: Account, slug: string, patch: { display_name?: 
     await updateProfile(acct.http, slug, patch);
   } catch (e) {
     if (e instanceof HttpError && e.status === 403 && slug !== acct.identity.slug) {
-      throw new UserError("the server says you are no longer paired with this operator; run `huddo pair` again");
+      throw new UserError("the server says you are no longer paired with this person; run `huddo pair` again");
     }
     throw e;
   }

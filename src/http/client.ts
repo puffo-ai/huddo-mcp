@@ -15,7 +15,7 @@ import {
   needsRotation,
 } from "../identity/primitives/keystore";
 import { loadLegacyIdentity, loadLegacySession } from "../application/runtime/legacy-secret-read-adapter";
-import { coreHttpTransportFor, coreOwnsAcks } from "./core-transport-port";
+import { awaitCoreHttpTransportFor, coreOwnsAcks, coreSignsRequest } from "./core-transport-port";
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 export const DEFAULT_UPLOAD_TIMEOUT_MS = 5 * 60_000;
@@ -73,10 +73,15 @@ export class PuffoHttpClient {
     );
   }
 
-  async post<T = unknown>(path: string, body?: Record<string, unknown>): Promise<T> {
+  /** `opts.headers` go on the request unsigned, beside the signature headers. */
+  async post<T = unknown>(
+    path: string,
+    body?: Record<string, unknown>,
+    opts?: { headers?: Record<string, string> },
+  ): Promise<T> {
     if (path === "/messages/ack" && coreOwnsAcks(this.serverUrl, this.slug)) return {} as T;
     const raw = body ? new TextEncoder().encode(JSON.stringify(body)) : new Uint8Array(0);
-    return this.request<T>("POST", path, raw);
+    return this.request<T>("POST", path, raw, { headers: opts?.headers });
   }
 
   async postBytes<T = unknown>(
@@ -105,11 +110,18 @@ export class PuffoHttpClient {
   }
 
   async postUnsigned<T = unknown>(path: string, body?: Record<string, unknown>): Promise<T> {
-    const raw = body ? JSON.stringify(body) : undefined;
+    return this.sendUnsigned<T>("POST", path, body);
+  }
+
+  async deleteUnsigned<T = unknown>(path: string, body?: Record<string, unknown>): Promise<T> {
+    return this.sendUnsigned<T>("DELETE", path, body);
+  }
+
+  private async sendUnsigned<T>(method: "POST" | "DELETE", path: string, body?: Record<string, unknown>): Promise<T> {
     const resp = await fetch(`${this.serverUrl}${path}`, {
-      method: "POST",
+      method,
       headers: { "content-type": "application/json" },
-      body: raw,
+      body: body ? JSON.stringify(body) : undefined,
     });
     return this.handleResponse<T>(resp);
   }
@@ -139,12 +151,12 @@ export class PuffoHttpClient {
     method: string,
     path: string,
     body: Uint8Array = new Uint8Array(0),
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; headers?: Record<string, string> },
   ): Promise<T> {
     if (!this.viaCore(method, path)) await this.ensureSubkey();
     const timeoutMs = opts?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 
-    const resp = await this.requestWithSessionRecovery(method, path, body, timeoutMs);
+    const resp = await this.requestWithSessionRecovery(method, path, body, timeoutMs, opts?.headers);
 
     return this.handleResponse<T>(resp);
   }
@@ -154,11 +166,12 @@ export class PuffoHttpClient {
     path: string,
     body: Uint8Array,
     timeoutMs: number,
+    extraHeaders?: Record<string, string>,
   ): Promise<Response> {
-    if (this.viaCore(method, path)) return this.doRequest(method, path, body, timeoutMs);
+    if (this.viaCore(method, path)) return this.doRequest(method, path, body, timeoutMs, extraHeaders);
     if (method !== "GET" && method !== "HEAD") {
       this.assertSessionCurrent();
-      return this.doRequest(method, path, body, timeoutMs);
+      return this.doRequest(method, path, body, timeoutMs, extraHeaders);
     }
     let response = await this.doRequest(method, path, body, timeoutMs);
     if (response.status !== 401) return response;
@@ -245,13 +258,19 @@ export class PuffoHttpClient {
     path: string,
     body: Uint8Array,
     timeoutMs: number,
+    extraHeaders?: Record<string, string>,
   ): Promise<Response> {
-    const core = coreHttpTransportFor(this.serverUrl, this.slug, method, path);
+    const startedAt = Date.now();
+    const core = await awaitCoreHttpTransportFor(this.serverUrl, this.slug, method, path, timeoutMs);
     if (core) {
+      if (extraHeaders && Object.keys(extraHeaders).length > 0) {
+        throw new Error(`${method} ${path}: the core transport sends no extra headers`);
+      }
       this.assertSessionCurrent();
       let timer: ReturnType<typeof setTimeout> | undefined;
+      const left = Math.max(0, timeoutMs - (Date.now() - startedAt));
       const deadline = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new HttpTimeoutError(method, path, timeoutMs)), timeoutMs);
+        timer = setTimeout(() => reject(new HttpTimeoutError(method, path, timeoutMs)), left);
       });
       try {
         return await Promise.race([core.send(method, path, body), deadline]);
@@ -259,7 +278,7 @@ export class PuffoHttpClient {
         clearTimeout(timer);
       }
     }
-    const headers = await this.authHeaders(method, path, body);
+    const headers = { ...(await this.authHeaders(method, path, body)), ...extraHeaders };
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
@@ -282,7 +301,7 @@ export class PuffoHttpClient {
   }
 
   private viaCore(method: string, path: string): boolean {
-    return coreHttpTransportFor(this.serverUrl, this.slug, method, path) !== null;
+    return coreSignsRequest(this.serverUrl, this.slug, method, path);
   }
 
   private async ensureSubkey(): Promise<void> {

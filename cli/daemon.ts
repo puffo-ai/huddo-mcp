@@ -1,141 +1,61 @@
-import { appendFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { createServer, connect, type Server, type Socket } from "node:net";
 import { join, resolve } from "node:path";
-import { transportSigningPort } from "../src/application/runtime/transport-signing-port";
 import { PRESENCE_HEARTBEAT_MS } from "../src/huddo/presence";
-import { acquireProcessLock, homeDir, identityDir, loadConfig, loadState, readJson, releaseProcessLock, writeJson, type Room } from "./home";
+import { acquireProcessLock, homeDir, readJson, releaseProcessLock, writeJson } from "./home";
 import { getRuntime, accountFor, activeSlug, type Account, type Runtime } from "./runtime";
-import { fetchSince, latestSeqOf, rowFromEnvelope, type Row } from "./rows";
-import { appendRows, loadMeta, syncRoom } from "./store";
 import { reportPresence } from "./presence";
-import { fetchSystemRows, mergeByTime, sameCursor, type SystemCursor } from "./membership";
-import {
-  ackRows,
-  advanceCursor,
-  setSystemCursor,
-  cachedNames,
-  errorText,
-  resolveNames,
-  resolveRoomArg,
-  roomFor,
-  sortedSpaces,
-  UserError,
-  type RoomMessages,
-} from "./ops";
+import { log, logToStderr } from "./daemon-log";
+import { errorText, sortedSpaces } from "./ops";
 import { VERSION } from "./version";
-import { buildStamp, daemonEndpoint, daemonLogPath, request as requestIpc } from "./ipc";
+import { buildStamp, daemonEndpoint, daemonLogPath, recordDaemonFailure, request as requestIpc, sameToken } from "./ipc";
+import { subscribeCoreEvents } from "../src/platform/web/core-runtime/core-events";
+import { attachCore, detachCore } from "./core";
+import type { CoreSession } from "../src/platform/web/core-runtime/bridge";
 
-const BACKSTOP_MS = 30_000;
-const POLL_WITHOUT_WS_MS = 3_000;
 const IDENTITY_CHECK_MS = 5_000;
-const HEALTHY_WINDOW_MS = 60_000;
-const LOG_CAP_BYTES = 1024 * 1024;
-const INBOX_CAP = 500;
-const MAX_BACKOFF_MS = 30_000;
 
-interface Waiter {
-  room: Room | null;
-  resolve: () => void;
+/** Core signs the session out on these; the daemon stops and says why instead of serving a dead identity. */
+const DEVICE_GONE = new Set(["device_revoked", "device_expired", "operator_revoked"]);
+
+export function deviceGone(event: { type: string } & Record<string, unknown>, slug: string): string | null {
+  if (event.type === "session_closed" && event.slug === slug) return "core closed this identity's session";
+  if (event.type !== "sync_failed") return null;
+  const code = String(event.code ?? (event.error as { code?: unknown } | undefined)?.code ?? "");
+  return DEVICE_GONE.has(code) ? `the server rejected this device (${code})` : null;
 }
 
-interface InboxFile {
-  fetched?: Record<string, number>;
-  rows?: Record<string, Row[]>;
-}
+type RealtimeStatus = { state?: string; last_error?: string | null };
+type RuntimeStatus = { realtime?: RealtimeStatus; last_error?: string | null; last_sync_at_ms?: number | null };
 
-let foreground = false;
-
-function log(message: string): void {
-  const line = `${new Date().toISOString()} [${process.pid}] ${message}\n`;
-  if (foreground) process.stderr.write(line);
-  try {
-    const path = daemonLogPath();
-    if (existsSync(path) && statSync(path).size > LOG_CAP_BYTES) renameSync(path, `${path}.1`);
-    appendFileSync(path, line);
-  } catch {}
-}
-
-export function readyRows(list: Row[], cursor: number, complete: number): Row[] {
-  return list.filter((row) => row.seq > cursor && row.seq <= complete);
-}
-
-const LEASE_MS = 60_000;
-
-interface Lease {
-  rooms: Map<string, { upTo: number; events: Row[]; eventCursor: SystemCursor | undefined }>;
-  timer: ReturnType<typeof setTimeout>;
-}
-
-class Session {
+/**
+ * The long-lived leader for this home: core syncs and keeps the relay socket open for every process, and the
+ * daemon keeps the active identity present.
+ */
+export class Session {
   readonly slug: string;
-  private rooms = new Map<string, Room>();
-  private fetched = new Map<string, number>();
-  private inbox = new Map<string, Row[]>();
-  private eventFetched = new Map<string, SystemCursor>();
-  private pendingEvents = new Map<string, Row[]>();
-  private waiters = new Set<Waiter>();
-  private leases = new Map<string, Lease>();
-  private ws: WebSocket | null = null;
-  private wsBackoff = 1_000;
-  private timers: ReturnType<typeof setTimeout>[] = [];
-  private backfilling = new Map<string, Promise<void>>();
-  private eventSyncing = new Map<string, Promise<void>>();
-  private persistTimer: ReturnType<typeof setTimeout> | null = null;
-  private stopped = false;
-  wsConnected = false;
-  lastEventAt: number | null = null;
-  lastOkAt: number | null = null;
+  private timers: ReturnType<typeof setInterval>[] = [];
+  private core: CoreSession | null = null;
+  private readonly unsubscribe: () => void;
   lastError: string | null = null;
   readonly ready: Promise<void>;
 
-  constructor(private readonly rt: Runtime, readonly acct: Account) {
+  constructor(rt: Runtime, readonly acct: Account, stop: (why: string) => void) {
     this.slug = acct.identity.slug;
-    this.ready = this.start();
-  }
-
-  private get inboxPath() {
-    return join(identityDir(this.slug), "inbox.json");
-  }
-
-  private async start(): Promise<void> {
-    const saved = readJson<InboxFile>(this.inboxPath) ?? {};
-    for (const [ch, seq] of Object.entries(saved.fetched ?? {})) this.fetched.set(ch, seq);
-    for (const [ch, rows] of Object.entries(saved.rows ?? {})) this.inbox.set(ch, rows);
-    await this.refreshRooms().catch((e) => this.fail(e));
-    await this.backfillAll();
-    this.synced = this.lastError === null;
-    this.beat();
-    this.every(PRESENCE_HEARTBEAT_MS, () => this.beat());
-    this.every(BACKSTOP_MS, async () => {
-      await this.refreshRooms().catch((e) => this.fail(e));
-      await this.backfillAll();
+    this.unsubscribe = subscribeCoreEvents((events) => {
+      const why = events.map((event) => deviceGone(event, this.slug)).find(Boolean);
+      if (why) stop(why);
     });
-    if (typeof WebSocket === "undefined") {
-      log("no global WebSocket in this Node version; polling instead");
-      this.every(POLL_WITHOUT_WS_MS, () => this.backfillAll());
-    } else {
-      void this.connectWs();
-    }
-    log(`serving ${this.slug} with ${this.rooms.size} room(s)`);
-  }
-
-  private every(ms: number, work: () => unknown): void {
-    const tick = () => {
-      if (this.stopped) return;
-      Promise.resolve()
-        .then(work)
-        .catch((e) => this.fail(e))
-        .finally(() => {
-          if (!this.stopped) this.timers.push(setTimeout(tick, ms));
-        });
-    };
-    this.timers.push(setTimeout(tick, ms));
-  }
-
-  private ok(): void {
-    this.lastOkAt = Date.now();
-    this.lastError = null;
+    this.ready = attachCore(rt, this.slug).then(
+      (core) => {
+        this.core = core;
+        this.beat();
+        this.timers.push(setInterval(() => this.beat(), PRESENCE_HEARTBEAT_MS));
+        log(`serving ${this.slug} through core`);
+      },
+      (e: unknown) => this.fail(e),
+    );
   }
 
   private fail(e: unknown): void {
@@ -143,385 +63,26 @@ class Session {
     log(`error: ${this.lastError}`);
   }
 
-  synced = false;
-
-  failing(): boolean {
-    if (this.wsConnected || this.lastError === null) return false;
-    return this.lastOkAt === null || Date.now() - this.lastOkAt > HEALTHY_WINDOW_MS;
-  }
-
-  healthy(): boolean {
-    return this.wsConnected || (this.lastOkAt !== null && Date.now() - this.lastOkAt < HEALTHY_WINDOW_MS && this.lastError === null);
-  }
-
-  roomList(): Room[] {
-    return [...this.rooms.values()];
-  }
-
-  async refreshRooms(): Promise<void> {
-    const spaces = await sortedSpaces(this.acct);
-    const next = new Map<string, Room>();
-    for (const space of spaces) {
-      const room = await roomFor(this.acct, space).catch(() => null);
-      if (room) next.set(room.channelId, room);
-    }
-    this.rooms = next;
-    this.ok();
-    const cursors = loadState(this.slug).cursors ?? {};
-    for (const room of next.values()) {
-      if (this.fetched.has(room.channelId)) continue;
-      const cursor = cursors[room.channelId] ?? await latestSeqOf(this.acct.http, room.channelId);
-      this.fetched.set(room.channelId, cursor);
-      if (cursors[room.channelId] === undefined) advanceCursor(this.slug, room.channelId, cursor);
-    }
-    for (const room of next.values()) {
-      if (!loadMeta(this.slug, room.channelId).seeded) void syncRoom(this.acct.http, this.slug, room.channelId).catch((e) => this.fail(e));
-    }
-  }
-
-  async backfillAll(): Promise<void> {
-    await Promise.all(this.roomList().map((room) => Promise.all([this.backfill(room.channelId), this.syncEvents(room)])));
-  }
-
-  private syncEvents(room: Room): Promise<void> {
-    const prev = this.eventSyncing.get(room.channelId) ?? Promise.resolve();
-    const work = prev.then(() => this.syncEventsOnce(room));
-    this.eventSyncing.set(room.channelId, work);
-    void work.finally(() => {
-      if (this.eventSyncing.get(room.channelId) === work) this.eventSyncing.delete(room.channelId);
-    });
-    return work;
-  }
-
-  private async syncEventsOnce(room: Room): Promise<void> {
-    const since = this.eventFetched.get(room.channelId) ?? loadState(this.slug).systemCursors?.[room.channelId];
-    try {
-      const got = await fetchSystemRows(this.acct.http, room, since);
-      if (since === undefined) {
-        this.eventFetched.set(room.channelId, got.cursor);
-        setSystemCursor(this.slug, room.channelId, got.cursor);
-        return;
-      }
-      if (sameCursor(got.cursor, since)) return;
-      this.eventFetched.set(room.channelId, got.cursor);
-      const fresh = got.rows.filter((r) => r.sender !== this.slug);
-      if (!fresh.length) return;
-      const pending = this.pendingEvents.get(room.channelId) ?? [];
-      const known = new Set(pending.map((r) => r.id));
-      this.pendingEvents.set(room.channelId, [...pending, ...fresh.filter((r) => !known.has(r.id))]);
-      this.lastEventAt = Date.now();
-      for (const w of [...this.waiters]) w.resolve();
-    } catch (e) {
-      this.fail(e);
-    }
-  }
-
-  backfill(channelId: string): Promise<void> {
-    const running = this.backfilling.get(channelId);
-    if (running) return running.then(() => this.backfill(channelId));
-    const work = (async () => {
-      const cursor = Math.max(this.fetched.get(channelId) ?? 0, loadState(this.slug).cursors?.[channelId] ?? 0);
-      try {
-        const stored = loadMeta(this.slug, channelId);
-        const from = stored.seeded && stored.maxSeq ? Math.min(cursor, stored.maxSeq) : cursor;
-        const got = await fetchSince(this.acct.http, channelId, from, stored.seeded ? Infinity : undefined);
-        this.ok();
-        this.synced = true;
-        if (!this.add(channelId, got.rows)) return;
-        ackRows(this.acct.http, got.rows, this.slug);
-        const before = this.fetched.get(channelId) ?? 0;
-        const after = Math.max(got.maxSeq, cursor, before);
-        this.fetched.set(channelId, after);
-        this.persist();
-        if (after > before) for (const w of [...this.waiters]) w.resolve();
-      } catch (e) {
-        this.fail(e);
-      }
-    })().finally(() => this.backfilling.delete(channelId));
-    this.backfilling.set(channelId, work);
-    return work;
-  }
-
-  private add(channelId: string, rows: Row[]): boolean {
-    if (!rows.length) return true;
-    try {
-      appendRows(this.slug, channelId, rows);
-    } catch (e) {
-      this.fail(e);
-      return false;
-    }
-    const list = this.inbox.get(channelId) ?? [];
-    const known = new Set(list.map((r) => r.seq));
-    let added = false;
-    for (const row of rows) {
-      if (known.has(row.seq)) continue;
-      list.push(row);
-      known.add(row.seq);
-      added = true;
-    }
-    if (!added) return true;
-    list.sort((a, b) => a.seq - b.seq);
-    this.inbox.set(channelId, list.slice(-INBOX_CAP));
-    this.lastEventAt = Date.now();
-    this.persist();
-    for (const w of [...this.waiters]) w.resolve();
-    return true;
-  }
-
-  private persist(): void {
-    if (this.persistTimer) return;
-    this.persistTimer = setTimeout(() => {
-      this.persistTimer = null;
-      const cursors = loadState(this.slug).cursors ?? {};
-      const rows: Record<string, Row[]> = {};
-      for (const [ch, list] of this.inbox) {
-        const kept = list.filter((r) => r.seq > (cursors[ch] ?? 0));
-        this.inbox.set(ch, kept);
-        if (kept.length) rows[ch] = kept;
-      }
-      try {
-        writeJson(this.inboxPath, { fetched: Object.fromEntries(this.fetched), rows });
-      } catch (e) {
-        this.fail(e);
-      }
-    }, 200);
-  }
-
-  private collect(room: Room | null): RoomMessages[] {
-    const cursors = loadState(this.slug).cursors ?? {};
-    const groups: RoomMessages[] = [];
-    for (const r of room ? [room] : this.roomList()) {
-      const cursor = Math.max(cursors[r.channelId] ?? 0, this.leasedUpTo(r.channelId));
-      const unread = readyRows(this.inbox.get(r.channelId) ?? [], cursor, this.fetched.get(r.channelId) ?? 0);
-      const fresh = unread.filter((row) => row.sender !== this.slug && !row.system);
-      const events = this.pendingEvents.get(r.channelId) ?? [];
-      if (fresh.length || events.length) groups.push({ room: r, rows: mergeByTime(fresh, events) });
-    }
-    return groups;
-  }
-
-  private leasedUpTo(channelId: string): number {
-    let upTo = 0;
-    for (const lease of this.leases.values()) upTo = Math.max(upTo, lease.rooms.get(channelId)?.upTo ?? 0);
-    return upTo;
-  }
-
-  private readyMax(channelId: string): number {
-    return readyRows(this.inbox.get(channelId) ?? [], 0, this.fetched.get(channelId) ?? 0).reduce((m, row) => Math.max(m, row.seq), 0);
-  }
-
-  private consumeIdle(room: Room | null): void {
-    for (const r of room ? [room] : this.roomList()) {
-      if (this.leasedUpTo(r.channelId)) continue;
-      const max = this.readyMax(r.channelId);
-      if (max) advanceCursor(this.slug, r.channelId, max);
-      this.pendingEvents.delete(r.channelId);
-      setSystemCursor(this.slug, r.channelId, this.eventFetched.get(r.channelId));
-    }
-    this.persist();
-  }
-
-  private lease(room: Room | null): string {
-    const id = randomBytes(12).toString("hex");
-    const rooms: Lease["rooms"] = new Map();
-    for (const r of room ? [room] : this.roomList()) {
-      const upTo = Math.max(this.readyMax(r.channelId), this.leasedUpTo(r.channelId));
-      const events = this.pendingEvents.get(r.channelId) ?? [];
-      this.pendingEvents.delete(r.channelId);
-      rooms.set(r.channelId, { upTo, events, eventCursor: this.eventFetched.get(r.channelId) });
-    }
-    const timer = setTimeout(() => this.release(id), LEASE_MS);
-    timer.unref?.();
-    this.leases.set(id, { rooms, timer });
-    return id;
-  }
-
-  commit(id: string): boolean {
-    const lease = this.leases.get(id);
-    if (!lease) return false;
-    clearTimeout(lease.timer);
-    this.leases.delete(id);
-    for (const [channelId, { upTo, eventCursor }] of lease.rooms) {
-      if (upTo) advanceCursor(this.slug, channelId, upTo);
-      setSystemCursor(this.slug, channelId, eventCursor);
-    }
-    this.persist();
-    return true;
-  }
-
-  release(id: string): void {
-    const lease = this.leases.get(id);
-    if (!lease) return;
-    clearTimeout(lease.timer);
-    this.leases.delete(id);
-    for (const [channelId, { events }] of lease.rooms) {
-      if (!events.length) continue;
-      const pending = this.pendingEvents.get(channelId) ?? [];
-      const known = new Set(pending.map((r) => r.id));
-      this.pendingEvents.set(channelId, [...events.filter((r) => !known.has(r.id)), ...pending]);
-    }
-    for (const w of [...this.waiters]) w.resolve();
-  }
-
   private beat(): void {
-    void reportPresence(this.acct);
+    void reportPresence(this.acct, (e) => this.fail(e));
   }
 
-  async wait(roomArg: string | undefined, timeoutMs: number) {
-    const deadline = Date.now() + timeoutMs;
-    const bounded = <T>(work: Promise<T>) => {
-      work.catch(() => undefined);
-      return Promise.race([work, new Promise<undefined>((r) => setTimeout(() => r(undefined), Math.max(0, deadline - Date.now())))]);
-    };
-    await bounded(this.ready);
-    let room: Room | null = null;
-    if (roomArg) {
-      room = this.roomList().find((r) => r.spaceId === roomArg) ?? null;
-      if (!room) {
-        room = (await bounded(resolveRoomArg(this.acct, roomArg))) ?? null;
-        if (!room) return { groups: [], names: {}, synced: false };
-        await bounded(this.refreshRooms().catch((e) => this.fail(e)));
-      }
-    }
-    if (!this.wsConnected) await bounded(this.backfillAll());
-    for (;;) {
-      const groups = this.collect(room);
-      if (groups.length) {
-        const lease = this.lease(room);
-        const rows = groups.flatMap((g) => g.rows);
-        const names = await Promise.race([
-          resolveNames(this.acct, rows).catch(() => cachedNames()),
-          new Promise<Record<string, string>>((r) => setTimeout(() => r(cachedNames()), Math.max(0, Math.min(2_000, deadline - Date.now())))),
-        ]);
-        return { groups, names, synced: true, lease };
-      }
-      this.consumeIdle(room);
-      const left = deadline - Date.now();
-      if (left <= 0) {
-        if (this.failing()) throw new NetworkErrorReply(this.lastError ?? "not connected to the Huddo server");
-        return { groups: [], names: {}, synced: this.synced };
-      }
-      await new Promise<void>((resolveWait) => {
-        const waiter: Waiter = {
-          room,
-          resolve: () => {
-            clearTimeout(timer);
-            this.waiters.delete(waiter);
-            resolveWait();
-          },
-        };
-        const timer = setTimeout(waiter.resolve, left);
-        this.waiters.add(waiter);
-      });
-    }
-  }
-
-  private async connectWs(): Promise<void> {
-    if (this.stopped) return;
-    try {
-      await this.acct.http.ensureAccountSubkey();
-      const session = await this.rt.keyStore.loadSession(this.slug);
-      if (!session) throw new Error("no device session");
-      const serverUrl = this.acct.identity.server_url.replace(/\/+$/, "");
-      const ws = new WebSocket(`${serverUrl.replace(/^http/, "ws")}/subscribe`);
-      this.ws = ws;
-      const renewAt = Math.max(60_000, session.expires_at - Date.now() - 10 * 60_000);
-      const renew = setTimeout(() => ws.close(), Math.min(renewAt, 2 ** 31 - 1));
-      ws.onopen = () => {
-        ws.send(JSON.stringify(transportSigningPort().signWebSocket({
-          serverUrl,
-          slug: this.slug,
-          credential: { deviceId: session.device_id, keyId: session.subkey_id, secretKey: session.subkey_secret_key },
-          crypto: this.rt.crypto,
-        })));
-      };
-      ws.onmessage = (ev) => {
-        if (this.ws !== ws) return;
-        let frame: Record<string, unknown>;
-        try {
-          frame = JSON.parse(String(ev.data)) as Record<string, unknown>;
-        } catch {
-          return;
-        }
-        this.onFrame(ws, frame);
-      };
-      ws.onclose = () => {
-        clearTimeout(renew);
-        if (this.ws !== ws) return;
-        this.ws = null;
-        if (this.wsConnected) log("websocket closed");
-        this.wsConnected = false;
-        this.scheduleReconnect();
-      };
-      ws.onerror = () => undefined;
-    } catch (e) {
-      this.fail(e);
-      this.scheduleReconnect();
-    }
-  }
-
-  private scheduleReconnect(): void {
-    if (this.stopped) return;
-    const delay = this.wsBackoff * (0.8 + Math.random() * 0.4);
-    this.wsBackoff = Math.min(this.wsBackoff * 2, MAX_BACKOFF_MS);
-    this.timers.push(setTimeout(() => void this.connectWs(), delay));
-  }
-
-  private onFrame(ws: WebSocket, frame: Record<string, unknown>): void {
-    switch (frame.type) {
-      case "connected":
-        this.wsConnected = true;
-        this.wsBackoff = 1_000;
-        this.ok();
-        log("websocket connected");
-        void this.refreshRooms().catch((e) => this.fail(e)).then(() => this.backfillAll());
-        break;
-      case "message": {
-        const envelope = frame.envelope as { type?: string; envelope_id?: string; signed_payload?: { payload?: { channel_id?: string } } } | undefined;
-        const channelId = envelope?.signed_payload?.payload?.channel_id;
-        if (!channelId) break;
-        this.lastEventAt = Date.now();
-        if (this.rooms.has(channelId)) {
-          const row = typeof frame.seq === "number" ? rowFromEnvelope(frame.seq, envelope, channelId) : null;
-          if (row && this.add(channelId, [row]) && envelope?.envelope_id) {
-            ws.send(JSON.stringify({ type: "ack", envelope_ids: [envelope.envelope_id] }));
-          }
-          void this.backfill(channelId);
-        } else {
-          void this.refreshRooms().catch((e) => this.fail(e)).then(() => this.backfill(channelId));
-        }
-        break;
-      }
-      case "event":
-      case "space_update":
-      case "channel_update":
-      case "space_delete":
-      case "channel_delete":
-      case "space_membership_changed":
-        void this.refreshRooms().catch((e) => this.fail(e)).then(() => this.backfillAll());
-        break;
-      case "ping":
-        ws.send(JSON.stringify({ type: "pong" }));
-        break;
-    }
+  async runtime(): Promise<RuntimeStatus | null> {
+    const outcome = await this.core?.client.call("query", JSON.stringify({ type: "runtime_status" })).catch(() => null);
+    if (outcome?.status !== "done") return null;
+    return (JSON.parse(outcome.envelope) as { ok?: RuntimeStatus }).ok ?? null;
   }
 
   stop(): void {
-    this.stopped = true;
-    for (const t of this.timers) clearTimeout(t);
+    this.unsubscribe();
+    for (const timer of this.timers) clearInterval(timer);
     this.timers = [];
-    const ws = this.ws;
-    this.ws = null;
-    ws?.close();
-    this.wsConnected = false;
-    for (const w of [...this.waiters]) w.resolve();
+    detachCore();
   }
 }
 
-class NetworkErrorReply extends Error {}
-
 export async function runDaemon(opts: { foreground: boolean }): Promise<void> {
-  foreground = opts.foreground;
+  logToStderr(opts.foreground);
   try {
     mkdirSync(homeDir(), { recursive: true });
     appendFileSync(daemonLogPath(), "");
@@ -530,7 +91,7 @@ export async function runDaemon(opts: { foreground: boolean }): Promise<void> {
     await serve();
   } catch (e) {
     log(`startup failed: ${errorText(e)}`);
-    if (!foreground) process.exit(1);
+    if (!opts.foreground) process.exit(1);
     throw e;
   }
 }
@@ -547,13 +108,14 @@ async function serve(): Promise<void> {
 
   const sync = (): Session | null => {
     const slug = activeSlug();
-    if (session && session.slug === slug) return session;
+    const device = slug ? rt.keyStore.identity(slug)?.device_id : undefined;
+    if (session && session.slug === slug && (!device || device === session.acct.identity.device_id)) return session;
     if (session) {
-      log(`switching from ${session.slug} to ${slug ?? "(none)"}`);
+      log(session.slug === slug ? `restarting ${slug} on device ${device}` : `switching from ${session.slug} to ${slug ?? "(none)"}`);
       session.stop();
       session = null;
     }
-    if (slug) session = new Session(rt, accountFor(rt, slug));
+    if (slug) session = new Session(rt, accountFor(rt, slug), shutdown);
     return session;
   };
 
@@ -564,6 +126,8 @@ async function serve(): Promise<void> {
         return { ok: true, pid: process.pid, build, home, slug: session?.slug ?? null, transport };
       case "status": {
         const s = sync();
+        const core = await s?.runtime();
+        const rooms = s ? await sortedSpaces(s.acct).catch(() => []) : [];
         return {
           ok: true,
           pid: process.pid,
@@ -572,37 +136,20 @@ async function serve(): Promise<void> {
           version: VERSION,
           startedAt: new Date(startedAt).toISOString(),
           slug: s?.slug ?? null,
-          wsConnected: s?.wsConnected ?? false,
+          wsConnected: core?.realtime?.state === "live",
           realtime: typeof WebSocket === "undefined" ? "polling" : "websocket",
-          rooms: s?.roomList().map((r) => ({ spaceId: r.spaceId, name: r.name })) ?? [],
-          lastEventAt: s?.lastEventAt ? new Date(s.lastEventAt).toISOString() : null,
-          lastError: s?.lastError ?? null,
+          rooms: rooms.map((r) => ({ spaceId: r.id, name: r.name })),
+          lastEventAt: core?.last_sync_at_ms ? new Date(core.last_sync_at_ms).toISOString() : null,
+          lastError: s?.lastError ?? core?.last_error ?? core?.realtime?.last_error ?? null,
           log: daemonLogPath(),
           transport,
         };
       }
-      case "refresh": {
-        const s = sync();
-        if (s) await s.ready.then(() => s.refreshRooms()).then(() => s.backfillAll()).catch(() => undefined);
+      case "refresh":
+        await sync()?.ready;
         return { ok: true };
-      }
-      case "wait": {
-        const s = sync();
-        if (!s || s.slug !== req.slug) return { ok: false, code: "unserved", error: "daemon serves another identity" };
-        try {
-          const batch = await s.wait(typeof req.room === "string" ? req.room : undefined, Math.max(0, Number(req.timeoutMs) || 0));
-          return { ok: true, ...batch };
-        } catch (e) {
-          if (e instanceof NetworkErrorReply) return { ok: false, code: "network", error: e.message };
-          return { ok: false, code: e instanceof UserError ? "user" : "network", error: errorText(e) };
-        }
-      }
-      case "commit": {
-        const s = sync();
-        return { ok: true, committed: !!s && typeof req.lease === "string" && s.commit(req.lease) };
-      }
       case "stop":
-        setTimeout(shutdown, 50);
+        setTimeout(() => shutdown(), 50);
         return { ok: true, pid: process.pid };
       default:
         return { ok: false, error: `unknown op ${String(req.op)}` };
@@ -632,7 +179,6 @@ async function serve(): Promise<void> {
       handle(req).then(
         (reply) => {
           if (!socket.destroyed) socket.end(`${JSON.stringify(reply)}\n`);
-          else if (typeof reply.lease === "string") session?.release(reply.lease);
         },
         (e) => {
           if (!socket.destroyed) socket.end(`${JSON.stringify({ ok: false, error: errorText(e) })}\n`);
@@ -643,8 +189,9 @@ async function serve(): Promise<void> {
   });
 
   const lockPath = join(home, "daemon.lock");
-  function shutdown(): void {
-    log("stopping");
+  function shutdown(why?: string): void {
+    log(why ? `error: stopping: ${why}` : "stopping");
+    if (why) recordDaemonFailure(why, session?.acct.identity.device_id);
     session?.stop();
     server.close();
     if (transport === "unix") rmSync(endpoint, { force: true });
@@ -734,16 +281,11 @@ async function serve(): Promise<void> {
       shutdown();
       return;
     }
-    if (loadConfig().active !== session?.slug) sync();
+    sync();
   }, IDENTITY_CHECK_MS);
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", () => shutdown());
+  process.on("SIGINT", () => shutdown());
   process.on("uncaughtException", (e) => log(`uncaught: ${errorText(e)}`));
   process.on("unhandledRejection", (e) => log(`unhandled: ${errorText(e)}`));
   await new Promise<void>(() => undefined);
-}
-
-function sameToken(given: unknown, expected: string): boolean {
-  if (typeof given !== "string" || given.length !== expected.length) return false;
-  return timingSafeEqual(Buffer.from(given), Buffer.from(expected));
 }

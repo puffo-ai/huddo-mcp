@@ -64,12 +64,26 @@ export class HttpError extends Error {
   }
 }
 
-export class UserFacingError extends Error {
-  constructor(message: string) {
+/** A signed request the core runtime refused or could not send, with its error code ("network_unavailable", …)
+ * and, when the server answered, its HTTP status. */
+export class CoreRequestError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly status?: number,
+  ) {
     super(message);
-    this.name = "UserFacingError";
+    this.name = "CoreRequestError";
+  }
+
+  /** Core writes a server's refusal as "… http_status_503 body=…"; screens read the status from the error, not its text. */
+  static fromCore(code: string, message: string): CoreRequestError {
+    const status = /\bhttp_status_(\d{3})\b/.exec(message)?.[1];
+    return new CoreRequestError(code, message, status ? Number(status) : undefined);
   }
 }
+
+export { UserFacingError } from "../shared/user-facing-error";
 
 export class HttpTimeoutError extends Error {
   constructor(

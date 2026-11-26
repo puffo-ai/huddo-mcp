@@ -1,5 +1,7 @@
 import type { CryptoOps } from "../http/types";
 import { coreWhisperKeys, type CoreDeviceSealed } from "../application/runtime/core-whisper-port";
+import { quoteOfContent, type MessageQuote } from "./message-quotes";
+import { parseAttachmentsContent, type AttachmentReference } from "../features/attachments/domain/attachment";
 
 export const WHISPER_CONTENT_TYPE = "huddo/whisper/v1";
 
@@ -15,6 +17,13 @@ export interface WhisperContent {
   nonce: string;
   ciphertext: string;
   keys: WhisperKey[];
+}
+
+/** What a whisper says, sealed together: its text, its files and, like any message, at most one quote. */
+export interface WhisperBody {
+  text: string;
+  quote?: MessageQuote;
+  attachments?: AttachmentReference[];
 }
 
 export interface WhisperContext {
@@ -56,13 +65,15 @@ export function isWhisperContent(content: unknown): content is WhisperContent {
 export function sealWhisper(
   crypto: CryptoOps,
   ctx: WhisperContext,
-  text: string,
+  body: string | WhisperBody,
   devices: readonly WhisperDevice[],
 ): WhisperContent {
   if (devices.length === 0) throw new Error("No devices to whisper to");
+  const { text, quote, attachments } = typeof body === "string" ? { text: body, quote: undefined, attachments: undefined } : body;
   const contentKey = crypto.generateRandomBytes(32);
   const nonce = crypto.generateRandomBytes(12);
-  const ciphertext = crypto.aeadSeal(contentKey, nonce, encoder.encode(JSON.stringify({ text })), contentAad(ctx));
+  const plain = JSON.stringify({ text, ...(quote ? { quotes: [quote] } : {}), ...(attachments?.length ? { attachments } : {}) });
+  const ciphertext = crypto.aeadSeal(contentKey, nonce, encoder.encode(plain), contentAad(ctx));
   const keys = devices.map((d) => {
     const sealed = crypto.hpkeSeal(d.kem_public_key, KEY_INFO, keyAad(ctx, d.device_id), contentKey);
     return { device_id: d.device_id, enc: crypto.base64urlEncode(sealed.enc), key: crypto.base64urlEncode(sealed.ciphertext) };
@@ -96,12 +107,15 @@ function whisperSlot(
   };
 }
 
-function whisperText(plain: Uint8Array): string | null {
+function whisperBody(plain: Uint8Array): WhisperBody | null {
   const parsed = JSON.parse(decoder.decode(plain)) as { text?: unknown };
-  return typeof parsed.text === "string" ? parsed.text : null;
+  if (typeof parsed.text !== "string") return null;
+  const quote = quoteOfContent(parsed);
+  const attachments = parseAttachmentsContent({ text: parsed.text, attachments: (parsed as { attachments?: unknown }).attachments ?? [] })?.attachments ?? [];
+  return { text: parsed.text, ...(quote ? { quote } : {}), ...(attachments.length ? { attachments } : {}) };
 }
 
-function decryptWhisper(crypto: CryptoOps, content: WhisperContent, full: WhisperContext, contentKey: Uint8Array): string | null {
+function decryptWhisper(crypto: CryptoOps, content: WhisperContent, full: WhisperContext, contentKey: Uint8Array): WhisperBody | null {
   const plain = crypto.aeadOpen(
     contentKey,
     crypto.base64urlDecode(content.nonce),
@@ -109,7 +123,7 @@ function decryptWhisper(crypto: CryptoOps, content: WhisperContent, full: Whispe
     contentAad(full),
   );
   contentKey.fill(0);
-  return whisperText(plain);
+  return whisperBody(plain);
 }
 
 export function openWhisper(
@@ -118,7 +132,7 @@ export function openWhisper(
   ctx: Omit<WhisperContext, "to">,
   deviceId: string,
   openKem: DeviceKemOpen,
-): string | null {
+): WhisperBody | null {
   try {
     const slot = whisperSlot(crypto, content, ctx, deviceId);
     if (!slot) return null;
@@ -138,12 +152,12 @@ export async function openWhisperWith(
   content: WhisperContent,
   ctx: Omit<WhisperContext, "to">,
   keys: WhisperKeys,
-): Promise<string | null> {
+): Promise<WhisperBody | null> {
   try {
     const deviceId = await keys.localDeviceId();
     const slot = deviceId ? whisperSlot(crypto, content, ctx, deviceId) : null;
     if (!slot) return null;
-    return whisperText(
+    return whisperBody(
       await keys.openSealed({
         enc: slot.enc,
         info: KEY_INFO,
@@ -161,15 +175,15 @@ export async function openWhisperWith(
 
 /** Opens whispers through core in the background and remembers each result by row id. */
 export function createWhisperTextCache(crypto: CryptoOps, onOpened: () => void) {
-  const texts = new Map<string, string | null>();
-  const sent = new Map<string, string>();
+  const texts = new Map<string, WhisperBody | null>();
+  const sent = new Map<string, WhisperBody>();
   const opening = new Set<string>();
   return {
     /** The plaintext of a whisper this page just sealed, so its stored copy shows at once. */
-    remember(content: WhisperContent, text: string): void {
-      sent.set(content.nonce, text);
+    remember(content: WhisperContent, body: WhisperBody): void {
+      sent.set(content.nonce, body);
     },
-    text(id: string, content: WhisperContent, ctx: Omit<WhisperContext, "to">): string | null | undefined {
+    body(id: string, content: WhisperContent, ctx: Omit<WhisperContext, "to">): WhisperBody | null | undefined {
       const known = texts.has(id) ? texts.get(id) : sent.get(content.nonce);
       if (known !== undefined) return known;
       const keys = coreWhisperKeys();
@@ -193,9 +207,9 @@ export async function whisperDevices(slugs: readonly string[]): Promise<WhisperD
   return keys.devices(slugs.filter(Boolean));
 }
 
-/** Seals `text` for the recipient's and the sender's devices, which core resolves. */
-export async function sealWhisperForRoom(crypto: CryptoOps, ctx: WhisperContext, text: string): Promise<WhisperContent> {
-  return sealWhisper(crypto, ctx, text, await whisperDevices([ctx.to, ctx.sender]));
+/** Seals `body` for the recipient's and the sender's devices, which core resolves. */
+export async function sealWhisperForRoom(crypto: CryptoOps, ctx: WhisperContext, body: string | WhisperBody): Promise<WhisperContent> {
+  return sealWhisper(crypto, ctx, body, await whisperDevices([ctx.to, ctx.sender]));
 }
 
 export function leadingWhisperTarget(
