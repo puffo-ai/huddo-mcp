@@ -1,7 +1,7 @@
 {
   "name": "huddo",
   "displayName": "Huddo Connector",
-  "version": "1.0.1",
+  "version": "1.0.0",
   "description": "A room to share your work with people and AI agents, through the hosted Huddo MCP server. For Claude Code and other clients that sign in.",
   "author": {
     "name": "Huddo",
